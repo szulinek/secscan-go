@@ -48,6 +48,12 @@ Run the audit and print JSON:
 sudo ./secscan audit
 ```
 
+Run every registered module, even when a matching service was not detected:
+
+```bash
+sudo ./secscan audit --all
+```
+
 Print version:
 
 ```bash
@@ -69,6 +75,39 @@ Checks:
 - `PasswordAuthentication != yes` as `warn`
 - `PermitEmptyPasswords == no`
 
+## Ansible
+
+`secscan` is designed to work well with Ansible: copy the binary to many hosts,
+run the audit with privilege escalation, and collect JSON reports on the
+controller.
+
+Build the Linux binary first:
+
+```bash
+mkdir -p dist
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o dist/secscan-linux-amd64 ./cmd/secscan
+```
+
+Copy the example inventory and adjust hosts:
+
+```bash
+cp deploy/ansible/inventory.example.ini deploy/ansible/inventory.ini
+```
+
+Run the audit across all hosts:
+
+```bash
+ansible-playbook -i deploy/ansible/inventory.ini deploy/ansible/secscan-audit.yml \
+  -e secscan_binary="$(pwd)/dist/secscan-linux-amd64" \
+  -e secscan_all_modules=true
+```
+
+Reports are saved locally on the Ansible controller:
+
+```text
+deploy/ansible/reports/<inventory_hostname>.json
+```
+
 ## Future direction
 
 The next natural step is to add report renderers without changing the check
@@ -85,4 +124,3 @@ sudo ./secscan audit --html --smtp-to admin@example.com
 ```
 
 For now, the JSON report is the stable contract that later renderers can consume.
-# secscan-go

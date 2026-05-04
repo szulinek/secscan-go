@@ -42,6 +42,9 @@ func runAudit(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("audit", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	timeout := flags.Duration("timeout", 30*time.Second, "command timeout")
+	allModules := false
+	flags.BoolVar(&allModules, "all", false, "run all registered modules, even when a service was not detected")
+	flags.BoolVar(&allModules, "all-modules", false, "run all registered modules, even when a service was not detected")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
@@ -49,7 +52,10 @@ func runAudit(args []string, stdout, stderr io.Writer) int {
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
 
-	report := audit.Run(ctx, execx.LocalRunner{}, audit.DefaultRegistry())
+	report := audit.RunWithOptions(ctx, execx.LocalRunner{}, audit.DefaultRegistry(), audit.Options{
+		AllModules: allModules,
+	})
+
 	return writeJSON(stdout, report)
 }
 
@@ -83,7 +89,7 @@ func printUsage(w io.Writer) {
 secscan - local security audit MVP
 
 Usage:
-  secscan audit [--timeout 30s]
+  secscan audit [--all] [--timeout 30s]
   secscan detect [--timeout 30s]
   secscan version
 
@@ -91,5 +97,8 @@ Commands:
   audit    detect host/services, run matching checks, print JSON
   detect   detect host/services/modules only, print JSON
   version  print secscan version
+
+Audit flags:
+  --all, --all-modules  run every registered module; useful for Ansible batch audits
 `))
 }

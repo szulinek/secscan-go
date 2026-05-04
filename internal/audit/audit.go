@@ -19,6 +19,7 @@ type ModuleReport struct {
 	ID       string `json:"id"`
 	Name     string `json:"name"`
 	Detected bool   `json:"detected"`
+	Selected bool   `json:"selected"`
 }
 
 type Report struct {
@@ -34,6 +35,10 @@ type Report struct {
 	Meta            map[string]string `json:"meta,omitempty"`
 }
 
+type Options struct {
+	AllModules bool
+}
+
 func DefaultRegistry() checks.Registry {
 	return checks.NewRegistry(
 		ssh.NewModule(),
@@ -41,6 +46,10 @@ func DefaultRegistry() checks.Registry {
 }
 
 func Run(ctx context.Context, runner execx.Runner, registry checks.Registry) Report {
+	return RunWithOptions(ctx, runner, registry, Options{})
+}
+
+func RunWithOptions(ctx context.Context, runner execx.Runner, registry checks.Registry, options Options) Report {
 	host := system.DetectInfo()
 	services, err := system.RunningServices(ctx, runner)
 	if services == nil {
@@ -62,6 +71,9 @@ func Run(ctx context.Context, runner execx.Runner, registry checks.Registry) Rep
 			string(checks.StatusInfo):  0,
 			string(checks.StatusError): 0,
 		},
+		Meta: map[string]string{
+			"audit_mode": auditMode(options),
+		},
 	}
 
 	if err != nil {
@@ -77,13 +89,15 @@ func Run(ctx context.Context, runner execx.Runner, registry checks.Registry) Rep
 
 	for _, module := range registry.Modules() {
 		detected := module.Detect(checkCtx)
+		selected := detected || options.AllModules
 		report.Modules = append(report.Modules, ModuleReport{
 			ID:       module.ID(),
 			Name:     module.Name(),
 			Detected: detected,
+			Selected: selected,
 		})
 
-		if !detected {
+		if !selected {
 			continue
 		}
 
@@ -102,4 +116,12 @@ func Detect(ctx context.Context, runner execx.Runner, registry checks.Registry) 
 	report.Results = []checks.Result{}
 	report.Summary = nil
 	return report
+}
+
+func auditMode(options Options) string {
+	if options.AllModules {
+		return "all_modules"
+	}
+
+	return "detected_modules"
 }

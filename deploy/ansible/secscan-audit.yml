@@ -1,0 +1,50 @@
+---
+- name: Run secscan audit
+  hosts: all
+  gather_facts: false
+  become: true
+  vars:
+    secscan_binary: "{{ playbook_dir }}/../../dist/secscan-linux-amd64"
+    secscan_remote_path: /tmp/secscan
+    secscan_report_dir: "{{ playbook_dir }}/reports"
+    secscan_all_modules: true
+    secscan_cleanup: true
+
+  tasks:
+    - name: Copy secscan binary to remote host
+      ansible.builtin.copy:
+        src: "{{ secscan_binary }}"
+        dest: "{{ secscan_remote_path }}"
+        mode: "0755"
+
+    - name: Run secscan audit
+      ansible.builtin.command: "{{ secscan_remote_path }} audit{{ ' --all' if secscan_all_modules else '' }}"
+      register: secscan_audit
+      changed_when: false
+
+    - name: Create local report directory
+      ansible.builtin.file:
+        path: "{{ secscan_report_dir }}"
+        state: directory
+        mode: "0755"
+      delegate_to: localhost
+      become: false
+      run_once: true
+
+    - name: Save host JSON report locally
+      ansible.builtin.copy:
+        content: "{{ secscan_audit.stdout }}\n"
+        dest: "{{ secscan_report_dir }}/{{ inventory_hostname }}.json"
+        mode: "0644"
+      delegate_to: localhost
+      become: false
+
+    - name: Remove remote secscan binary
+      ansible.builtin.file:
+        path: "{{ secscan_remote_path }}"
+        state: absent
+      when: secscan_cleanup | bool
+
+    - name: Show local report path
+      ansible.builtin.debug:
+        msg: "Saved {{ secscan_report_dir }}/{{ inventory_hostname }}.json"

@@ -1,4 +1,6 @@
 .cache/
-dist/
-secscan
-secscan-*
+/dist/
+/secscan
+/secscan-*
+deploy/ansible/inventory.ini
+deploy/ansible/reports/
