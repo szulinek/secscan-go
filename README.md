@@ -10,7 +10,8 @@ The current version is intentionally simple:
 - host detection from `/etc/os-release`, `runtime.GOOS`, `runtime.GOARCH`
 - running service detection through `systemctl list-units --type=service --state=running`
 - modular checks through `Module` and `Check` interfaces
-- first module: `sshd`
+- first deep-check module: `sshd`
+- detection-only modules for common DirectAdmin/Linux services
 - JSON output on stdout
 
 Not included yet:
@@ -60,7 +61,7 @@ Print version:
 ./secscan version
 ```
 
-## Current SSH checks
+## Current modules
 
 The `sshd` module runs only when `ssh.service` or `sshd.service` is detected as
 running in systemd. It reads effective OpenSSH settings with:
@@ -69,11 +70,26 @@ running in systemd. It reads effective OpenSSH settings with:
 sshd -T
 ```
 
-Checks:
+SSH checks:
 
 - `PermitRootLogin != yes`
 - `PasswordAuthentication != yes` as `warn`
 - `PermitEmptyPasswords == no`
+
+Detection-only modules currently emit one INFO check named `Service detected`.
+They are intentionally shallow so deeper security checks can be added module by
+module later:
+
+- `nginx`
+- `php_fpm`
+- `directadmin`
+- `mysql_mariadb`
+- `exim`
+- `dovecot`
+- `redis`
+- `named_bind`
+- `pure_ftpd`
+- `firewall_csf_lfd`
 
 ## Ansible
 
@@ -111,11 +127,13 @@ deploy/ansible/reports/<inventory_hostname>.json
 ## Future direction
 
 The next natural step is to add report renderers without changing the check
-modules:
+modules. The JSON report should remain the stable data contract, while renderers
+turn the same findings into customer-facing output:
 
 - `report/json` for machine-readable output
 - `report/html` for a client/admin GUI-style report
-- `report/smtp` for sending the generated report to a configured email address
+- `report/pdf` for a client-ready PDF audit report
+- `report/smtp` for sending the generated PDF/HTML report to a configured email address
 
 The intended future flow:
 

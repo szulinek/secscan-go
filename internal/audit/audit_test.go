@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"secscan/internal/checks"
+	"secscan/internal/checks/ssh"
 )
 
 type fakeRunner map[string]string
@@ -29,7 +32,7 @@ func TestRunExecutesSSHDChecksWhenServiceDetected(t *testing.T) {
 		}, "\n"),
 	}
 
-	report := Run(context.Background(), runner, DefaultRegistry())
+	report := Run(context.Background(), runner, checks.NewRegistry(ssh.NewModule()))
 	if len(report.Results) != 3 {
 		t.Fatalf("expected 3 sshd checks, got %d", len(report.Results))
 	}
@@ -58,8 +61,12 @@ func TestRunWithOptionsExecutesAllModulesWhenServiceIsNotDetected(t *testing.T) 
 	}
 
 	report := RunWithOptions(context.Background(), runner, DefaultRegistry(), Options{AllModules: true})
-	if len(report.Results) != 3 {
-		t.Fatalf("expected 3 sshd checks, got %d", len(report.Results))
+	if len(report.Modules) != 11 {
+		t.Fatalf("expected 11 modules, got %d", len(report.Modules))
+	}
+
+	if len(report.Results) != 13 {
+		t.Fatalf("expected 13 checks, got %d", len(report.Results))
 	}
 
 	if report.Modules[0].Detected {
@@ -76,5 +83,9 @@ func TestRunWithOptionsExecutesAllModulesWhenServiceIsNotDetected(t *testing.T) 
 
 	if report.Summary["pass"] != 3 {
 		t.Fatalf("expected 3 passing checks, got %d", report.Summary["pass"])
+	}
+
+	if report.Summary["info"] != 10 {
+		t.Fatalf("expected 10 info checks, got %d", report.Summary["info"])
 	}
 }

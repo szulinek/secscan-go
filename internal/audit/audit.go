@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"secscan/internal/checks"
+	"secscan/internal/checks/service"
 	"secscan/internal/checks/ssh"
 	"secscan/internal/execx"
 	"secscan/internal/system"
@@ -40,9 +41,12 @@ type Options struct {
 }
 
 func DefaultRegistry() checks.Registry {
-	return checks.NewRegistry(
+	modules := []checks.Module{
 		ssh.NewModule(),
-	)
+	}
+	modules = append(modules, service.DefaultModules()...)
+
+	return checks.NewRegistry(modules...)
 }
 
 func Run(ctx context.Context, runner execx.Runner, registry checks.Registry) Report {
