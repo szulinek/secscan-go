@@ -124,8 +124,15 @@ func TestFirewallStatusPassWarnError(t *testing.T) {
 	if result.Status != checks.StatusPass {
 		t.Fatalf("expected pass status, got %s", result.Status)
 	}
+	assertCompleteResult(t, result)
 	if !strings.Contains(result.Evidence, "running_service=nftables.service") {
 		t.Fatalf("unexpected pass evidence: %s", result.Evidence)
+	}
+	if result.Summary != "An active host firewall signal was detected." {
+		t.Fatalf("unexpected pass summary: %s", result.Summary)
+	}
+	if strings.Contains(result.Summary, "No active") {
+		t.Fatalf("pass summary should not contain stale warn text: %s", result.Summary)
 	}
 
 	warnCtx := base
@@ -138,8 +145,15 @@ func TestFirewallStatusPassWarnError(t *testing.T) {
 	if result.Status != checks.StatusWarn {
 		t.Fatalf("expected warn status, got %s", result.Status)
 	}
-	if result.Evidence != "firewall=not_detected" {
+	assertCompleteResult(t, result)
+	if !strings.HasPrefix(result.Evidence, "firewall=not_detected") {
 		t.Fatalf("unexpected warn evidence: %s", result.Evidence)
+	}
+	if result.Summary != "No active host firewall signal was detected." {
+		t.Fatalf("unexpected warn summary: %s", result.Summary)
+	}
+	if strings.Contains(strings.ToLower(result.Summary+" "+result.ClientSummary), "brute-force") {
+		t.Fatalf("firewall messages should not mention protection daemon: %s / %s", result.Summary, result.ClientSummary)
 	}
 
 	errorCtx := base
@@ -152,8 +166,12 @@ func TestFirewallStatusPassWarnError(t *testing.T) {
 	if result.Status != checks.StatusError {
 		t.Fatalf("expected error status, got %s", result.Status)
 	}
+	assertCompleteResult(t, result)
 	if !strings.Contains(result.Evidence, "ufw=probe_error") {
 		t.Fatalf("unexpected error evidence: %s", result.Evidence)
+	}
+	if strings.Contains(result.Evidence, "firewall=not_detected") {
+		t.Fatalf("error evidence should not contain stale warn evidence: %s", result.Evidence)
 	}
 }
 
@@ -168,17 +186,55 @@ func TestProtectionDaemonPassWarn(t *testing.T) {
 	if result.Status != checks.StatusPass {
 		t.Fatalf("expected pass status, got %s", result.Status)
 	}
+	assertCompleteResult(t, result)
 	if result.Evidence != "running_service=fail2ban.service" {
 		t.Fatalf("unexpected pass evidence: %s", result.Evidence)
 	}
+	assertNoFirewallText(t, result)
 
 	ctx.Services = nil
 	result = checkProtectionDaemon{}.Run(ctx)
 	if result.Status != checks.StatusWarn {
 		t.Fatalf("expected warn status, got %s", result.Status)
 	}
+	assertCompleteResult(t, result)
 	if result.Evidence != "protection_daemon=not_detected" {
 		t.Fatalf("unexpected warn evidence: %s", result.Evidence)
+	}
+	if result.Summary != "No fail2ban or CrowdSec service was detected as running." {
+		t.Fatalf("unexpected warn summary: %s", result.Summary)
+	}
+	assertNoFirewallText(t, result)
+}
+
+func TestLinuxChecksDoNotLeaveDuplicateOrStaleMessages(t *testing.T) {
+	ctx := checks.Context{
+		Context: context.Background(),
+		Host:    linuxHost(),
+		Runner: mockRunner{outputs: map[string]string{
+			"uname -r": "6.1.0-25-amd64\n",
+			"apt-get -s -o Debug::NoLocking=true upgrade":      "0 upgraded, 0 newly installed\n",
+			"dpkg-query -W -f=${Status} unattended-upgrades":   "install ok installed",
+			"systemctl is-enabled unattended-upgrades.service": "enabled\n",
+			"ufw status":       "Status: inactive\n",
+			"nft list ruleset": "",
+			"iptables -S":      "-P INPUT ACCEPT\n-P FORWARD ACCEPT\n-P OUTPUT ACCEPT\n",
+		}},
+	}
+
+	for _, check := range []checks.Check{
+		checkOSVersion{},
+		checkKernelVersion{},
+		checkSecurityUpdatesAvailable{},
+		checkUnattendedUpgrades{},
+		checkFirewallStatus{},
+		checkProtectionDaemon{},
+	} {
+		result := check.Run(ctx)
+		assertCompleteResult(t, result)
+		if strings.Contains(strings.ToLower(result.Summary), "firewall") && result.ID == "linux.protection_daemon" {
+			t.Fatalf("protection daemon summary mentions firewall: %s", result.Summary)
+		}
 	}
 }
 
@@ -191,5 +247,63 @@ func linuxHost() system.Info {
 			"VERSION_ID":       "12",
 			"VERSION_CODENAME": "bookworm",
 		},
+	}
+}
+
+func assertCompleteResult(t *testing.T, result checks.Result) {
+	t.Helper()
+	missing := []string{}
+	if result.Category == "" {
+		missing = append(missing, "category")
+	}
+	if result.Severity == "" {
+		missing = append(missing, "severity")
+	}
+	if result.Status == "" {
+		missing = append(missing, "status")
+	}
+	if result.Title == "" {
+		missing = append(missing, "title")
+	}
+	if result.Summary == "" {
+		missing = append(missing, "summary")
+	}
+	if result.ClientSummary == "" {
+		missing = append(missing, "client_summary")
+	}
+	if result.AdminDetails == "" {
+		missing = append(missing, "admin_details")
+	}
+	if result.Impact == "" {
+		missing = append(missing, "impact")
+	}
+	if result.Recommendation == "" {
+		missing = append(missing, "recommendation")
+	}
+	if result.Remediation == "" {
+		missing = append(missing, "remediation")
+	}
+	if result.Evidence == "" {
+		missing = append(missing, "evidence")
+	}
+	if len(missing) > 0 {
+		t.Fatalf("%s missing fields: %s", result.ID, strings.Join(missing, ", "))
+	}
+}
+
+func assertNoFirewallText(t *testing.T, result checks.Result) {
+	t.Helper()
+	combined := strings.ToLower(strings.Join([]string{
+		result.Title,
+		result.Summary,
+		result.ClientSummary,
+		result.AdminDetails,
+		result.Impact,
+		result.Recommendation,
+		result.Remediation,
+		result.Evidence,
+	}, " "))
+	if strings.Contains(combined, "firewall") {
+		t.Fatalf("%s should not mention firewall: %s", result.ID, combined)
 	}
 }

@@ -187,6 +187,7 @@ func (c checkUnattendedUpgrades) Run(ctx checks.Context) checks.Result {
 	result.Category = checks.CategorySystem
 	result.Impact = "Missing automatic security updates increases exposure to known vulnerabilities between maintenance windows."
 	result.Recommendation = "Install and enable unattended-upgrades or document an equivalent patch-management process."
+	result.Remediation = result.Recommendation
 	result.ClientSummary = "Automatic security updates are not confirmed on this server."
 
 	if !isDebianLike(ctx.Host) {
@@ -230,6 +231,7 @@ func (c checkFirewallStatus) Run(ctx checks.Context) checks.Result {
 	result.Category = checks.CategoryFirewall
 	result.Impact = "Without a detected host firewall, exposed services may be reachable more broadly than intended."
 	result.Recommendation = "Enable and verify a firewall layer such as CSF/LFD, nftables, iptables, or UFW."
+	result.Remediation = result.Recommendation
 	result.ClientSummary = "A host-level firewall was not confirmed."
 
 	if ctx.Host.GOOS != "linux" && len(ctx.Host.OSRelease) == 0 {
@@ -264,10 +266,11 @@ func (c checkFirewallStatus) Run(ctx checks.Context) checks.Result {
 		return result
 	}
 
-	result.Evidence = "firewall=not_detected"
+	evidence := "firewall=not_detected"
 	if len(status.InstalledSignals) > 0 {
-		result.Evidence += "; " + strings.Join(status.InstalledSignals, "; ")
+		evidence += "; " + strings.Join(status.InstalledSignals, "; ")
 	}
+	result.Evidence = evidence
 	result.Summary = "No active host firewall signal was detected."
 	return result
 }
@@ -300,12 +303,12 @@ func (c checkProtectionDaemon) Run(ctx checks.Context) checks.Result {
 		return result
 	}
 
-	signals := protectionDaemonSignals(ctx)
-	if len(signals) > 0 {
+	detected := protectionDaemonServices(ctx)
+	if len(detected) > 0 {
 		result.Status = checks.StatusPass
 		result.Summary = "A brute-force protection daemon is running."
 		result.ClientSummary = "Brute-force protection appears to be active."
-		result.Evidence = strings.Join(signals, "; ")
+		result.Evidence = strings.Join(detected, "; ")
 		return result
 	}
 
@@ -482,15 +485,15 @@ func isMissingCommandError(err error) bool {
 		strings.Contains(value, "no such file or directory")
 }
 
-func protectionDaemonSignals(ctx checks.Context) []string {
-	signals := []string{}
+func protectionDaemonServices(ctx checks.Context) []string {
+	detected := []string{}
 	for _, service := range ctx.Services {
 		switch service.Unit {
 		case "fail2ban.service", "crowdsec.service":
-			signals = append(signals, "running_service="+service.Unit)
+			detected = append(detected, "running_service="+service.Unit)
 		}
 	}
-	return unique(signals)
+	return unique(detected)
 }
 
 func osReleaseID(info system.Info) string {
