@@ -63,22 +63,26 @@ type Check interface {
 }
 
 type Result struct {
-	ID                   string   `json:"id"`
-	ModuleID             string   `json:"module_id"`
-	Service              string   `json:"service"`
-	Title                string   `json:"title"`
-	Category             Category `json:"category"`
-	Severity             Severity `json:"severity"`
-	Status               Status   `json:"status"`
-	Summary              string   `json:"summary,omitempty"`
-	Impact               string   `json:"impact,omitempty"`
-	Recommendation       string   `json:"recommendation,omitempty"`
-	Evidence             string   `json:"evidence,omitempty"`
-	ClientSummary        string   `json:"client_summary,omitempty"`
-	AdminDetails         string   `json:"admin_details,omitempty"`
-	HiddenInClientReport bool     `json:"hidden_in_client_report"`
-	Remediation          string   `json:"remediation,omitempty"`
-	Error                string   `json:"error,omitempty"`
+	ID       string `json:"id"`
+	ModuleID string `json:"module_id"`
+	Service  string `json:"service"`
+	Title    string `json:"title"`
+
+	Category Category `json:"category"`
+	Severity Severity `json:"severity"`
+	Status   Status   `json:"status"`
+
+	Summary       string `json:"summary,omitempty"`
+	ClientSummary string `json:"client_summary,omitempty"`
+	AdminDetails  string `json:"admin_details,omitempty"`
+
+	Impact         string `json:"impact,omitempty"`
+	Recommendation string `json:"recommendation,omitempty"`
+	Remediation    string `json:"remediation,omitempty"`
+	Evidence       string `json:"evidence,omitempty"`
+	Error          string `json:"error,omitempty"`
+
+	HiddenInClientReport bool `json:"hidden_in_client_report"`
 }
 
 func NewResult(id, moduleID, service, title string, severity Severity, status Status) Result {
@@ -96,6 +100,15 @@ func NewResult(id, moduleID, service, title string, severity Severity, status St
 func (r *Result) Normalize() {
 	if r.Category == "" {
 		r.Category = CategorySystem
+	}
+	if r.Severity == "" {
+		r.Severity = SeverityInfo
+	}
+	if r.Status == "" {
+		r.Status = StatusInfo
+	}
+	if r.Title == "" {
+		r.Title = r.ID
 	}
 	if r.ClientSummary == "" {
 		r.ClientSummary = r.Summary

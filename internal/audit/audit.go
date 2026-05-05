@@ -25,6 +25,11 @@ type ModuleReport struct {
 	Selected bool   `json:"selected"`
 }
 
+type Inventory struct {
+	Services []system.Service `json:"services"`
+	Modules  []ModuleReport   `json:"modules"`
+}
+
 type Report struct {
 	Tool            string            `json:"tool"`
 	Version         string            `json:"version"`
@@ -32,10 +37,12 @@ type Report struct {
 	Host            system.Info       `json:"host"`
 	RunningServices []system.Service  `json:"running_services"`
 	Modules         []ModuleReport    `json:"modules"`
+	Inventory       Inventory         `json:"inventory"`
 	Results         []checks.Result   `json:"results"`
 	Errors          []string          `json:"errors,omitempty"`
 	Summary         map[string]int    `json:"summary,omitempty"`
 	SeverityCounts  map[string]int    `json:"severity_counts"`
+	SeverityIssues  map[string]int    `json:"severity_issues"`
 	Score           int               `json:"score"`
 	TopFindings     []checks.Result   `json:"top_findings"`
 	ClientFindings  []checks.Result   `json:"client_findings"`
@@ -122,6 +129,7 @@ func Detect(ctx context.Context, runner execx.Runner, registry checks.Registry) 
 	report.Results = []checks.Result{}
 	report.Summary = nil
 	report.SeverityCounts = nil
+	report.SeverityIssues = nil
 	report.Score = 0
 	report.TopFindings = nil
 	report.ClientFindings = nil

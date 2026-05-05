@@ -121,7 +121,7 @@ func (c checkPermitRootLogin) ID() string {
 }
 
 func (c checkPermitRootLogin) Title() string {
-	return "PermitRootLogin is not enabled"
+	return "PermitRootLogin state"
 }
 
 func (c checkPermitRootLogin) Run(ctx checks.Context) checks.Result {
@@ -144,12 +144,14 @@ func (c checkPermitRootLogin) Run(ctx checks.Context) checks.Result {
 	result.AdminDetails = "Checked effective OpenSSH configuration using sshd -T."
 
 	if value == "yes" {
+		result.Title = "PermitRootLogin is enabled"
 		result.Status = checks.StatusFail
 		result.Summary = "Root login over SSH is enabled."
 		result.ClientSummary = "Direct root login over SSH is enabled."
 		return result
 	}
 
+	result.Title = "PermitRootLogin is disabled"
 	result.Summary = "Root login over SSH is not explicitly enabled."
 	result.ClientSummary = "Direct root login over SSH is not enabled."
 	return result
@@ -164,7 +166,7 @@ func (c checkPasswordAuthentication) ID() string {
 }
 
 func (c checkPasswordAuthentication) Title() string {
-	return "PasswordAuthentication is not enabled"
+	return "PasswordAuthentication state"
 }
 
 func (c checkPasswordAuthentication) Run(ctx checks.Context) checks.Result {
@@ -187,14 +189,16 @@ func (c checkPasswordAuthentication) Run(ctx checks.Context) checks.Result {
 	result.AdminDetails = "Checked effective OpenSSH configuration using sshd -T."
 
 	if value == "yes" {
+		result.Title = "PasswordAuthentication is enabled"
 		result.Status = checks.StatusWarn
 		result.Summary = "Password based SSH login is enabled."
 		result.ClientSummary = "SSH password login is enabled."
 		return result
 	}
 
-	result.Summary = "Password based SSH login is not enabled."
-	result.ClientSummary = "SSH password login is not enabled."
+	result.Title = "PasswordAuthentication is disabled"
+	result.Summary = "Password based SSH login is disabled."
+	result.ClientSummary = "SSH password login is disabled."
 	return result
 }
 
@@ -207,7 +211,7 @@ func (c checkPermitEmptyPasswords) ID() string {
 }
 
 func (c checkPermitEmptyPasswords) Title() string {
-	return "PermitEmptyPasswords is disabled"
+	return "PermitEmptyPasswords state"
 }
 
 func (c checkPermitEmptyPasswords) Run(ctx checks.Context) checks.Result {
@@ -230,12 +234,14 @@ func (c checkPermitEmptyPasswords) Run(ctx checks.Context) checks.Result {
 	result.AdminDetails = "Checked effective OpenSSH configuration using sshd -T."
 
 	if value != "no" {
+		result.Title = "PermitEmptyPasswords is enabled"
 		result.Status = checks.StatusFail
 		result.Summary = "SSH accounts with empty passwords are permitted."
 		result.ClientSummary = "SSH would allow accounts with empty passwords."
 		return result
 	}
 
+	result.Title = "PermitEmptyPasswords is disabled"
 	result.Summary = "SSH accounts with empty passwords are not permitted."
 	result.ClientSummary = "SSH accounts with empty passwords are not permitted."
 	return result
