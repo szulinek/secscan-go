@@ -2,14 +2,18 @@ package system
 
 import (
 	"bufio"
+	"net"
 	"os"
 	"runtime"
+	"sort"
 	"strings"
 )
 
 const OSReleasePath = "/etc/os-release"
 
 type Info struct {
+	Hostname       string            `json:"hostname,omitempty"`
+	IPAddresses    []string          `json:"ip_addresses,omitempty"`
 	GOOS           string            `json:"goos"`
 	GOARCH         string            `json:"goarch"`
 	OSReleasePath  string            `json:"os_release_path"`
@@ -23,6 +27,11 @@ func DetectInfo() Info {
 		GOARCH:        runtime.GOARCH,
 		OSReleasePath: OSReleasePath,
 		OSRelease:     map[string]string{},
+		IPAddresses:   DetectIPAddresses(),
+	}
+
+	if hostname, err := os.Hostname(); err == nil {
+		info.Hostname = hostname
 	}
 
 	values, err := ReadOSRelease(OSReleasePath)
@@ -33,6 +42,64 @@ func DetectInfo() Info {
 
 	info.OSRelease = values
 	return info
+}
+
+func DetectIPAddresses() []string {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return []string{}
+	}
+
+	seen := map[string]struct{}{}
+	var ips []string
+	for _, iface := range interfaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+
+		for _, addr := range addrs {
+			ip := addressIP(addr)
+			if ip == nil || !isReportableIP(ip) {
+				continue
+			}
+			if v4 := ip.To4(); v4 != nil {
+				ip = v4
+			}
+
+			value := ip.String()
+			if _, ok := seen[value]; ok {
+				continue
+			}
+			seen[value] = struct{}{}
+			ips = append(ips, value)
+		}
+	}
+
+	sort.Strings(ips)
+	return ips
+}
+
+func addressIP(addr net.Addr) net.IP {
+	switch value := addr.(type) {
+	case *net.IPNet:
+		return value.IP
+	case *net.IPAddr:
+		return value.IP
+	default:
+		return nil
+	}
+}
+
+func isReportableIP(ip net.IP) bool {
+	return !ip.IsLoopback() &&
+		!ip.IsUnspecified() &&
+		!ip.IsLinkLocalUnicast() &&
+		!ip.IsLinkLocalMulticast()
 }
 
 func ReadOSRelease(path string) (map[string]string, error) {

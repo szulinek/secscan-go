@@ -8,18 +8,18 @@ The current version is intentionally simple:
 - one binary, no daemon and no agent running in the background
 - CLI commands: `audit`, `detect`, `report`, `version`
 - host detection from `/etc/os-release`, `runtime.GOOS`, `runtime.GOARCH`
+- hostname and non-loopback IP address inventory
 - running service detection through `systemctl list-units --type=service --state=running`
 - modular checks through `Module` and `Check` interfaces
 - first deep-check module: `sshd`
 - Linux and Nginx baseline checks
 - detection-only modules for common DirectAdmin/Linux services
 - JSON output on stdout
-- HTML reports for client/admin views
+- HTML and PDF reports for client/admin views
+- SMTP delivery for client PDF reports
 
 Not included yet:
 
-- PDF reports
-- SMTP delivery
 - central panel
 - uploads
 - automatic fixes
@@ -63,6 +63,60 @@ sudo ./secscan audit --all --format json > audit.json
 ./secscan report --input audit.json --format html --type client > client-report.html
 ./secscan report --input audit.json --format html --type admin > admin-report.html
 ```
+
+Render a PDF report:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y wkhtmltopdf
+
+./secscan report --input audit.json --format pdf --type client > client-report.pdf
+./secscan report --input audit.json --format pdf --type admin > admin-report.pdf
+```
+
+If `wkhtmltopdf` is not in `PATH`, pass it explicitly:
+
+```bash
+./secscan report --input audit.json --format pdf --type client \
+  --wkhtmltopdf /usr/bin/wkhtmltopdf > client-report.pdf
+```
+
+## SMTP delivery
+
+Create your local SMTP config from the template:
+
+```bash
+cp config/smtp.example.json config/smtp.json
+nano config/smtp.json
+```
+
+The real config file is ignored by git. Fill in:
+
+```json
+{
+  "host": "smtp.example.com",
+  "port": 587,
+  "username": "audit@example.com",
+  "password": "CHANGE_ME",
+  "from": "audit@example.com",
+  "from_name": "LH.pl Security Audit",
+  "tls": "starttls",
+  "insecure_skip_verify": false,
+  "default_to": []
+}
+```
+
+Send a client PDF report to a specific address:
+
+```bash
+./secscan send-report \
+  --input audit.json \
+  --type client \
+  --smtp-config config/smtp.json \
+  --to klient@example.com
+```
+
+You can also put a default recipient into `default_to` and omit `--to`.
 
 Print version:
 
@@ -148,20 +202,24 @@ Render one of the collected reports:
 ./secscan report --input deploy/ansible/reports/server1.json --format html --type admin > admin-report.html
 ```
 
+Render and send a client PDF:
+
+```bash
+./secscan send-report \
+  --input deploy/ansible/reports/server1.json \
+  --type client \
+  --smtp-config config/smtp.json \
+  --to klient@example.com
+```
+
 ## Future direction
 
-The JSON report is the stable data contract. HTML client/admin rendering is
-implemented on top of that contract, and the next renderers should consume the
-same fields:
-
-- `report/pdf` for a client-ready PDF audit report
-- `report/smtp` for sending the generated PDF/HTML report to a configured email address
+The JSON report is the stable data contract. HTML/PDF rendering and SMTP
+delivery are implemented on top of that contract.
 
 The intended future flow:
 
 ```bash
 sudo ./secscan audit --all --format json > audit.json
-./secscan report --input audit.json --format pdf --type client --smtp-to admin@example.com
+./secscan send-report --input audit.json --type client --smtp-config config/smtp.json --to admin@example.com
 ```
-
-PDF and SMTP are not implemented yet.

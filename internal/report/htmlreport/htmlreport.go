@@ -496,6 +496,15 @@ func hostLabel(report audit.Report) string {
 	if host := strings.TrimSpace(report.Meta["host"]); host != "" {
 		return host
 	}
+	if hostname := strings.TrimSpace(report.Host.Hostname); hostname != "" {
+		if len(report.Host.IPAddresses) > 0 {
+			return hostname + " / " + report.Host.IPAddresses[0]
+		}
+		return hostname
+	}
+	if len(report.Host.IPAddresses) > 0 {
+		return report.Host.IPAddresses[0]
+	}
 	return "Not provided in audit JSON"
 }
 

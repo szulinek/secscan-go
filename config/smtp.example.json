@@ -1,0 +1,11 @@
+{
+  "host": "smtp.example.com",
+  "port": 587,
+  "username": "audit@example.com",
+  "password": "CHANGE_ME",
+  "from": "audit@example.com",
+  "from_name": "LH.pl Security Audit",
+  "tls": "starttls",
+  "insecure_skip_verify": false,
+  "default_to": []
+}

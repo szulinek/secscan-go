@@ -16,6 +16,7 @@ func TestClientReportHidesInventoryAndInfo(t *testing.T) {
 	mustContain(t, html, "Security Audit Report")
 	mustContain(t, html, "Executive Summary")
 	mustContain(t, html, "Top Risks")
+	mustContain(t, html, "server1.example.com / 203.0.113.10")
 	mustContain(t, html, "PermitRootLogin is enabled")
 	mustContain(t, html, "Disable direct root SSH login.")
 	mustContain(t, html, "Technical details")
@@ -54,9 +55,11 @@ func renderTestReport(t *testing.T, reportType Type) string {
 		Version:     "0.1.0",
 		GeneratedAt: "2026-05-05T12:00:00Z",
 		Host: system.Info{
-			GOOS:      "linux",
-			GOARCH:    "amd64",
-			OSRelease: map[string]string{"PRETTY_NAME": "Debian GNU/Linux 12"},
+			Hostname:    "server1.example.com",
+			IPAddresses: []string{"203.0.113.10"},
+			GOOS:        "linux",
+			GOARCH:      "amd64",
+			OSRelease:   map[string]string{"PRETTY_NAME": "Debian GNU/Linux 12"},
 		},
 		Modules: modules,
 		Inventory: audit.Inventory{

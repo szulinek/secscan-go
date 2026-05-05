@@ -2,5 +2,6 @@
 /dist/
 /secscan
 /secscan-*
+config/smtp.json
 deploy/ansible/inventory.ini
 deploy/ansible/reports/
