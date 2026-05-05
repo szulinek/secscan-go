@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -111,6 +113,126 @@ func TestSecurityUpdatesAvailableCheck(t *testing.T) {
 	}
 }
 
+func TestListeningPortsCheck(t *testing.T) {
+	ctx := checks.Context{
+		Context: context.Background(),
+		Host:    linuxHost(),
+		Runner: mockRunner{outputs: map[string]string{
+			"ss -tulpn": strings.Join([]string{
+				"Netid State Recv-Q Send-Q Local Address:Port Peer Address:Port Process",
+				`tcp LISTEN 0 128 0.0.0.0:22 0.0.0.0:* users:(("sshd",pid=100,fd=3))`,
+				`tcp LISTEN 0 128 [::]:443 [::]:* users:(("nginx",pid=101,fd=6))`,
+				`tcp LISTEN 0 128 127.0.0.1:3306 0.0.0.0:* users:(("mysqld",pid=102,fd=7))`,
+			}, "\n"),
+		}},
+	}
+
+	result := checkListeningPorts{}.Run(ctx)
+	if result.Status != checks.StatusInfo {
+		t.Fatalf("expected info status, got %s", result.Status)
+	}
+	assertCompleteResult(t, result)
+	if !strings.Contains(result.Evidence, "tcp/0.0.0.0/22/sshd") || !strings.Contains(result.Evidence, "tcp/::/443/nginx") {
+		t.Fatalf("unexpected listening port evidence: %s", result.Evidence)
+	}
+	if strings.Contains(result.Evidence, "3306") {
+		t.Fatalf("loopback listener should not be reported: %s", result.Evidence)
+	}
+
+	ctx.Runner = mockRunner{outputs: map[string]string{
+		"ss -tulpn": `tcp LISTEN 0 128 0.0.0.0:8080 0.0.0.0:* users:(("devsrv",pid=200,fd=3))`,
+	}}
+	result = checkListeningPorts{}.Run(ctx)
+	if result.Status != checks.StatusWarn {
+		t.Fatalf("expected warn status, got %s", result.Status)
+	}
+	assertCompleteResult(t, result)
+	if !strings.Contains(result.Evidence, "tcp/0.0.0.0/8080/devsrv") {
+		t.Fatalf("unexpected warn evidence: %s", result.Evidence)
+	}
+	if result.HiddenInClientReport {
+		t.Fatal("unexpected public port warning should be visible to client report")
+	}
+}
+
+func TestConfigPermissionsCheck(t *testing.T) {
+	withLinuxFixturePaths(t)
+	ctx := checks.Context{Context: context.Background(), Host: linuxHost()}
+
+	result := checkConfigPermissions{}.Run(ctx)
+	if result.Status != checks.StatusPass {
+		t.Fatalf("expected pass status, got %s", result.Status)
+	}
+	assertCompleteResult(t, result)
+	if !strings.Contains(result.Evidence, "passwd=0644") || !strings.Contains(result.Evidence, "sudoers=0440") {
+		t.Fatalf("unexpected pass evidence: %s", result.Evidence)
+	}
+
+	if err := os.Chmod(configPermissionTargets[1].Path, 0644); err != nil {
+		t.Fatalf("chmod shadow fixture: %v", err)
+	}
+	result = checkConfigPermissions{}.Run(ctx)
+	if result.Status != checks.StatusFail {
+		t.Fatalf("expected fail status for broad shadow permissions, got %s", result.Status)
+	}
+	assertCompleteResult(t, result)
+	if !strings.Contains(result.Evidence, "shadow=0644>0640") {
+		t.Fatalf("unexpected fail evidence: %s", result.Evidence)
+	}
+
+	if err := os.Remove(configPermissionTargets[0].Path); err != nil {
+		t.Fatalf("remove passwd fixture: %v", err)
+	}
+	result = checkConfigPermissions{}.Run(ctx)
+	if result.Status != checks.StatusError {
+		t.Fatalf("expected error status for unreadable config, got %s", result.Status)
+	}
+	assertCompleteResult(t, result)
+	if !strings.Contains(result.Evidence, "passwd=stat_error") {
+		t.Fatalf("unexpected error evidence: %s", result.Evidence)
+	}
+}
+
+func TestSudoersRiskyEntriesCheck(t *testing.T) {
+	paths := withLinuxFixturePaths(t)
+	ctx := checks.Context{Context: context.Background(), Host: linuxHost()}
+
+	result := checkSudoersRiskyEntries{}.Run(ctx)
+	if result.Status != checks.StatusPass {
+		t.Fatalf("expected pass status, got %s", result.Status)
+	}
+	assertCompleteResult(t, result)
+	if result.Evidence != "sudoers_risks=none" {
+		t.Fatalf("unexpected pass evidence: %s", result.Evidence)
+	}
+
+	riskyPath := filepath.Join(paths.sudoersDropInDir, "admins")
+	writeFixtureFile(t, riskyPath, 0440, strings.Join([]string{
+		"ops ALL=(ALL) NOPASSWD: ALL",
+		"admin ALL=(ALL) ALL",
+	}, "\n"))
+	result = checkSudoersRiskyEntries{}.Run(ctx)
+	if result.Status != checks.StatusWarn {
+		t.Fatalf("expected warn status, got %s", result.Status)
+	}
+	assertCompleteResult(t, result)
+	if !strings.Contains(result.Evidence, "admins:NOPASSWD") || !strings.Contains(result.Evidence, "admins:ALL=(ALL)ALL") {
+		t.Fatalf("unexpected warn evidence: %s", result.Evidence)
+	}
+
+	if err := os.Remove(paths.sudoersPath); err != nil {
+		t.Fatalf("remove sudoers fixture: %v", err)
+	}
+	result = checkSudoersRiskyEntries{}.Run(ctx)
+	if result.Status != checks.StatusError {
+		t.Fatalf("expected error status for unreadable sudoers, got %s", result.Status)
+	}
+	assertCompleteResult(t, result)
+	if !strings.Contains(result.Evidence, "sudoers=read_error") {
+		t.Fatalf("unexpected error evidence: %s", result.Evidence)
+	}
+}
+
 func TestFirewallStatusPassWarnError(t *testing.T) {
 	base := checks.Context{
 		Context: context.Background(),
@@ -208,6 +330,7 @@ func TestProtectionDaemonPassWarn(t *testing.T) {
 }
 
 func TestLinuxChecksDoNotLeaveDuplicateOrStaleMessages(t *testing.T) {
+	withLinuxFixturePaths(t)
 	ctx := checks.Context{
 		Context: context.Background(),
 		Host:    linuxHost(),
@@ -216,6 +339,7 @@ func TestLinuxChecksDoNotLeaveDuplicateOrStaleMessages(t *testing.T) {
 			"apt-get -s -o Debug::NoLocking=true upgrade":      "0 upgraded, 0 newly installed\n",
 			"dpkg-query -W -f=${Status} unattended-upgrades":   "install ok installed",
 			"systemctl is-enabled unattended-upgrades.service": "enabled\n",
+			"ss -tulpn":        `tcp LISTEN 0 128 0.0.0.0:22 0.0.0.0:* users:(("sshd",pid=100,fd=3))`,
 			"ufw status":       "Status: inactive\n",
 			"nft list ruleset": "",
 			"iptables -S":      "-P INPUT ACCEPT\n-P FORWARD ACCEPT\n-P OUTPUT ACCEPT\n",
@@ -229,12 +353,73 @@ func TestLinuxChecksDoNotLeaveDuplicateOrStaleMessages(t *testing.T) {
 		checkUnattendedUpgrades{},
 		checkFirewallStatus{},
 		checkProtectionDaemon{},
+		checkListeningPorts{},
+		checkConfigPermissions{},
+		checkSudoersRiskyEntries{},
 	} {
 		result := check.Run(ctx)
 		assertCompleteResult(t, result)
 		if strings.Contains(strings.ToLower(result.Summary), "firewall") && result.ID == "linux.protection_daemon" {
 			t.Fatalf("protection daemon summary mentions firewall: %s", result.Summary)
 		}
+	}
+}
+
+type fixturePaths struct {
+	sudoersPath      string
+	sudoersDropInDir string
+}
+
+func withLinuxFixturePaths(t *testing.T) fixturePaths {
+	t.Helper()
+
+	dir := t.TempDir()
+	sshDir := filepath.Join(dir, "ssh")
+	sudoersDir := filepath.Join(dir, "sudoers.d")
+	if err := os.MkdirAll(sshDir, 0700); err != nil {
+		t.Fatalf("create ssh fixture dir: %v", err)
+	}
+	if err := os.MkdirAll(sudoersDir, 0700); err != nil {
+		t.Fatalf("create sudoers fixture dir: %v", err)
+	}
+
+	paths := fixturePaths{
+		sudoersPath:      filepath.Join(dir, "sudoers"),
+		sudoersDropInDir: sudoersDir,
+	}
+	targets := []configPermissionTarget{
+		{Key: "passwd", Path: filepath.Join(dir, "passwd"), MaxMode: 0644},
+		{Key: "shadow", Path: filepath.Join(dir, "shadow"), MaxMode: 0640, Critical: true},
+		{Key: "sudoers", Path: paths.sudoersPath, MaxMode: 0440, Critical: true},
+		{Key: "sshd_config", Path: filepath.Join(sshDir, "sshd_config"), MaxMode: 0644},
+	}
+	writeFixtureFile(t, targets[0].Path, 0644, "root:x:0:0:root:/root:/bin/bash\n")
+	writeFixtureFile(t, targets[1].Path, 0640, "root:*:19000:0:99999:7:::\n")
+	writeFixtureFile(t, targets[2].Path, 0440, "root ALL=(root) /usr/bin/systemctl\n")
+	writeFixtureFile(t, targets[3].Path, 0644, "PermitRootLogin no\n")
+
+	originalTargets := configPermissionTargets
+	originalSudoersPath := sudoersPath
+	originalSudoersDropInPath := sudoersDropInPath
+	configPermissionTargets = targets
+	sudoersPath = paths.sudoersPath
+	sudoersDropInPath = paths.sudoersDropInDir
+	t.Cleanup(func() {
+		configPermissionTargets = originalTargets
+		sudoersPath = originalSudoersPath
+		sudoersDropInPath = originalSudoersDropInPath
+	})
+
+	return paths
+}
+
+func writeFixtureFile(t *testing.T, path string, mode os.FileMode, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), mode); err != nil {
+		t.Fatalf("write fixture %s: %v", path, err)
+	}
+	if err := os.Chmod(path, mode); err != nil {
+		t.Fatalf("chmod fixture %s: %v", path, err)
 	}
 }
 
