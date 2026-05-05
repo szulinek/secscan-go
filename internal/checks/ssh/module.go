@@ -143,17 +143,30 @@ func (c checkPermitRootLogin) Run(ctx checks.Context) checks.Result {
 	result.Remediation = result.Recommendation
 	result.AdminDetails = "Checked effective OpenSSH configuration using sshd -T."
 
-	if value == "yes" {
+	switch value {
+	case "no":
+		result.Title = "PermitRootLogin is disabled"
+		result.Summary = "Root login over SSH is disabled."
+		result.ClientSummary = "Direct root login over SSH is disabled."
+	case "without-password", "prohibit-password":
+		result.Title = "PermitRootLogin allows key-based root login"
+		result.Severity = checks.SeverityMedium
+		result.Status = checks.StatusWarn
+		result.Summary = "Root login over SSH is allowed for key-based authentication."
+		result.ClientSummary = "Direct root login over SSH is still possible with SSH keys."
+	case "yes":
 		result.Title = "PermitRootLogin is enabled"
 		result.Status = checks.StatusFail
 		result.Summary = "Root login over SSH is enabled."
 		result.ClientSummary = "Direct root login over SSH is enabled."
-		return result
+	default:
+		result.Title = "PermitRootLogin has unexpected value"
+		result.Severity = checks.SeverityMedium
+		result.Status = checks.StatusWarn
+		result.Summary = "Root login over SSH uses an unrecognized PermitRootLogin value."
+		result.ClientSummary = "Direct root login over SSH requires administrator review."
 	}
 
-	result.Title = "PermitRootLogin is disabled"
-	result.Summary = "Root login over SSH is not explicitly enabled."
-	result.ClientSummary = "Direct root login over SSH is not enabled."
 	return result
 }
 

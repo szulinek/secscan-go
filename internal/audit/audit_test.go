@@ -2,6 +2,7 @@ package audit
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -96,6 +97,10 @@ func TestRunWithOptionsExecutesAllModulesWhenServiceIsNotDetected(t *testing.T) 
 	if len(report.Inventory.Modules) != len(report.Modules) {
 		t.Fatalf("expected inventory modules to mirror modules")
 	}
+
+	if len(report.ModuleSummary) != len(report.Modules) {
+		t.Fatalf("expected module summary to mirror modules")
+	}
 }
 
 func TestPrepareReportScoresAndClassifiesFindings(t *testing.T) {
@@ -130,6 +135,15 @@ func TestPrepareReportScoresAndClassifiesFindings(t *testing.T) {
 				HiddenInClientReport: true,
 			},
 			{
+				ID:       "medium.pass",
+				ModuleID: "x",
+				Title:    "Medium pass",
+				Category: checks.CategorySystem,
+				Severity: checks.SeverityMedium,
+				Status:   checks.StatusPass,
+				Summary:  "pass",
+			},
+			{
 				ID:       "info",
 				ModuleID: "x",
 				Title:    "Info",
@@ -151,14 +165,23 @@ func TestPrepareReportScoresAndClassifiesFindings(t *testing.T) {
 	if len(report.ClientFindings) != 2 {
 		t.Fatalf("expected 2 client findings, got %d", len(report.ClientFindings))
 	}
-	if len(report.AdminFindings) != 3 {
-		t.Fatalf("expected 3 admin findings without info, got %d", len(report.AdminFindings))
+	if len(report.AdminFindings) != 4 {
+		t.Fatalf("expected 4 admin findings without info, got %d", len(report.AdminFindings))
 	}
-	if report.SeverityCounts["critical"] != 1 || report.SeverityCounts["high"] != 1 || report.SeverityCounts["low"] != 1 || report.SeverityCounts["info"] != 1 {
+	if report.SeverityCounts["critical"] != 1 || report.SeverityCounts["high"] != 1 || report.SeverityCounts["medium"] != 1 || report.SeverityCounts["low"] != 1 || report.SeverityCounts["info"] != 1 {
 		t.Fatalf("unexpected severity counts: %#v", report.SeverityCounts)
 	}
-	if report.SeverityIssues["critical"] != 1 || report.SeverityIssues["high"] != 1 || report.SeverityIssues["low"] != 1 || report.SeverityIssues["info"] != 0 {
+	if _, ok := report.SeverityIssues["info"]; ok {
+		t.Fatalf("severity issues should not include info: %#v", report.SeverityIssues)
+	}
+	if report.SeverityIssues["critical"] != 1 || report.SeverityIssues["high"] != 1 || report.SeverityIssues["medium"] != 0 || report.SeverityIssues["low"] != 1 {
 		t.Fatalf("unexpected severity issue counts: %#v", report.SeverityIssues)
+	}
+	if len(report.ModuleSummary) != 1 {
+		t.Fatalf("expected one module summary, got %d", len(report.ModuleSummary))
+	}
+	if report.ModuleSummary[0].ModuleID != "x" || report.ModuleSummary[0].Fail != 2 || report.ModuleSummary[0].Warn != 1 || report.ModuleSummary[0].Pass != 1 {
+		t.Fatalf("unexpected module summary: %#v", report.ModuleSummary[0])
 	}
 }
 
@@ -220,5 +243,65 @@ func TestFindingsAreSortedBySeverityThenStatus(t *testing.T) {
 		if report.ClientFindings[i].ID != id {
 			t.Fatalf("client finding %d: expected %s, got %s", i, id, report.ClientFindings[i].ID)
 		}
+	}
+}
+
+func TestAdminFindingsAreSortedByStatusThenSeverity(t *testing.T) {
+	report := Report{Results: []checks.Result{
+		{ID: "pass.critical", Title: "pass critical", Severity: checks.SeverityCritical, Status: checks.StatusPass},
+		{ID: "warn.low", Title: "warn low", Severity: checks.SeverityLow, Status: checks.StatusWarn},
+		{ID: "fail.medium", Title: "fail medium", Severity: checks.SeverityMedium, Status: checks.StatusFail},
+		{ID: "info.critical", Title: "info critical", Severity: checks.SeverityCritical, Status: checks.StatusInfo},
+		{ID: "fail.low", Title: "fail low", Severity: checks.SeverityLow, Status: checks.StatusFail},
+		{ID: "warn.high", Title: "warn high", Severity: checks.SeverityHigh, Status: checks.StatusWarn},
+	}}
+	PrepareReport(&report)
+
+	want := []string{"fail.medium", "fail.low", "warn.high", "warn.low", "pass.critical"}
+	if len(report.AdminFindings) != len(want) {
+		t.Fatalf("expected %d admin findings, got %d", len(want), len(report.AdminFindings))
+	}
+
+	for i, id := range want {
+		if report.AdminFindings[i].ID != id {
+			t.Fatalf("admin finding %d: expected %s, got %s", i, id, report.AdminFindings[i].ID)
+		}
+	}
+}
+
+func TestReportJSONDoesNotExposeRootRunningServices(t *testing.T) {
+	runner := fakeRunner{
+		"systemctl list-units --type=service --state=running --no-legend --no-pager --plain": "ssh.service loaded active running OpenBSD Secure Shell server\n",
+		"sshd -T": strings.Join([]string{
+			"permitrootlogin no",
+			"passwordauthentication no",
+			"permitemptypasswords no",
+		}, "\n"),
+	}
+
+	report := Run(context.Background(), runner, checks.NewRegistry(ssh.NewModule()))
+	payload, err := json.Marshal(report)
+	if err != nil {
+		t.Fatalf("marshal report: %v", err)
+	}
+
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &root); err != nil {
+		t.Fatalf("unmarshal report: %v", err)
+	}
+	if _, ok := root["running_services"]; ok {
+		t.Fatalf("root JSON should not include running_services: %s", payload)
+	}
+
+	var inventory struct {
+		Services []struct {
+			Unit string `json:"unit"`
+		} `json:"services"`
+	}
+	if err := json.Unmarshal(root["inventory"], &inventory); err != nil {
+		t.Fatalf("unmarshal inventory: %v", err)
+	}
+	if len(inventory.Services) != 1 || inventory.Services[0].Unit != "ssh.service" {
+		t.Fatalf("unexpected inventory services: %#v", inventory.Services)
 	}
 }

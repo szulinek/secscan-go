@@ -88,7 +88,7 @@ func (c checkFirewallDetected) ID() string {
 }
 
 func (c checkFirewallDetected) Title() string {
-	return "Firewall is detected"
+	return "Host firewall is present"
 }
 
 func (c checkFirewallDetected) Run(ctx checks.Context) checks.Result {

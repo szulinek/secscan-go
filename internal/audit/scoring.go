@@ -10,13 +10,13 @@ import (
 func PrepareReport(report *Report) {
 	report.Summary = emptyStatusSummary()
 	report.SeverityCounts = emptySeverityCounts()
-	report.SeverityIssues = emptySeverityCounts()
+	report.SeverityIssues = emptySeverityIssues()
 	report.TopFindings = []checks.Result{}
 	report.ClientFindings = []checks.Result{}
 	report.AdminFindings = []checks.Result{}
-	report.Inventory = Inventory{
-		Services: report.RunningServices,
-		Modules:  report.Modules,
+	report.ModuleSummary = []ModuleSummary{}
+	if len(report.Inventory.Modules) == 0 && len(report.Modules) > 0 {
+		report.Inventory.Modules = report.Modules
 	}
 
 	for i := range report.Results {
@@ -43,8 +43,9 @@ func PrepareReport(report *Report) {
 	}
 
 	sortFindings(report.ClientFindings)
-	sortFindings(report.AdminFindings)
+	sortAdminFindings(report.AdminFindings)
 	report.TopFindings = topFindings(report.Results, 10)
+	report.ModuleSummary = moduleSummary(report.Modules, report.Results)
 	report.Score = calculateScore(report.Results)
 }
 
@@ -66,6 +67,15 @@ func emptySeverityCounts() map[string]int {
 		string(checks.SeverityMedium):   0,
 		string(checks.SeverityLow):      0,
 		string(checks.SeverityInfo):     0,
+	}
+}
+
+func emptySeverityIssues() map[string]int {
+	return map[string]int{
+		string(checks.SeverityCritical): 0,
+		string(checks.SeverityHigh):     0,
+		string(checks.SeverityMedium):   0,
+		string(checks.SeverityLow):      0,
 	}
 }
 
@@ -127,17 +137,73 @@ func sortFindings(findings []checks.Result) {
 	})
 }
 
+func sortAdminFindings(findings []checks.Result) {
+	sort.SliceStable(findings, func(i, j int) bool {
+		leftStatus := statusRank(findings[i].Status)
+		rightStatus := statusRank(findings[j].Status)
+		if leftStatus != rightStatus {
+			return leftStatus > rightStatus
+		}
+
+		leftSeverity := severityRank(findings[i].Severity)
+		rightSeverity := severityRank(findings[j].Severity)
+		if leftSeverity != rightSeverity {
+			return leftSeverity > rightSeverity
+		}
+
+		return false
+	})
+}
+
 func isRisk(result checks.Result) bool {
 	return result.Status == checks.StatusFail || result.Status == checks.StatusWarn
 }
 
 func isAdminFinding(result checks.Result) bool {
 	switch result.Status {
-	case checks.StatusFail, checks.StatusWarn, checks.StatusError, checks.StatusPass:
+	case checks.StatusFail, checks.StatusWarn, checks.StatusPass:
 		return true
 	default:
 		return false
 	}
+}
+
+func moduleSummary(modules []ModuleReport, results []checks.Result) []ModuleSummary {
+	summaries := []ModuleSummary{}
+	byModule := map[string]int{}
+	addModule := func(moduleID string) int {
+		if index, ok := byModule[moduleID]; ok {
+			return index
+		}
+		summaries = append(summaries, ModuleSummary{ModuleID: moduleID})
+		index := len(summaries) - 1
+		byModule[moduleID] = index
+		return index
+	}
+
+	for _, module := range modules {
+		if module.ID == "" {
+			continue
+		}
+		addModule(module.ID)
+	}
+
+	for _, result := range results {
+		if result.ModuleID == "" {
+			continue
+		}
+		index := addModule(result.ModuleID)
+		switch result.Status {
+		case checks.StatusFail:
+			summaries[index].Fail++
+		case checks.StatusWarn:
+			summaries[index].Warn++
+		case checks.StatusPass:
+			summaries[index].Pass++
+		}
+	}
+
+	return summaries
 }
 
 func scorePenalty(result checks.Result) float64 {

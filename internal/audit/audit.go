@@ -30,24 +30,31 @@ type Inventory struct {
 	Modules  []ModuleReport   `json:"modules"`
 }
 
+type ModuleSummary struct {
+	ModuleID string `json:"module_id"`
+	Fail     int    `json:"fail"`
+	Warn     int    `json:"warn"`
+	Pass     int    `json:"pass"`
+}
+
 type Report struct {
-	Tool            string            `json:"tool"`
-	Version         string            `json:"version"`
-	GeneratedAt     string            `json:"generated_at"`
-	Host            system.Info       `json:"host"`
-	RunningServices []system.Service  `json:"running_services"`
-	Modules         []ModuleReport    `json:"modules"`
-	Inventory       Inventory         `json:"inventory"`
-	Results         []checks.Result   `json:"results"`
-	Errors          []string          `json:"errors,omitempty"`
-	Summary         map[string]int    `json:"summary,omitempty"`
-	SeverityCounts  map[string]int    `json:"severity_counts"`
-	SeverityIssues  map[string]int    `json:"severity_issues"`
-	Score           int               `json:"score"`
-	TopFindings     []checks.Result   `json:"top_findings"`
-	ClientFindings  []checks.Result   `json:"client_findings"`
-	AdminFindings   []checks.Result   `json:"admin_findings"`
-	Meta            map[string]string `json:"meta,omitempty"`
+	Tool           string            `json:"tool"`
+	Version        string            `json:"version"`
+	GeneratedAt    string            `json:"generated_at"`
+	Host           system.Info       `json:"host"`
+	Modules        []ModuleReport    `json:"modules"`
+	Inventory      Inventory         `json:"inventory"`
+	Results        []checks.Result   `json:"results"`
+	Errors         []string          `json:"errors,omitempty"`
+	Summary        map[string]int    `json:"summary,omitempty"`
+	SeverityCounts map[string]int    `json:"severity_counts"`
+	SeverityIssues map[string]int    `json:"severity_issues"`
+	Score          int               `json:"score"`
+	TopFindings    []checks.Result   `json:"top_findings"`
+	ClientFindings []checks.Result   `json:"client_findings"`
+	AdminFindings  []checks.Result   `json:"admin_findings"`
+	ModuleSummary  []ModuleSummary   `json:"module_summary"`
+	Meta           map[string]string `json:"meta,omitempty"`
 }
 
 type Options struct {
@@ -77,13 +84,16 @@ func RunWithOptions(ctx context.Context, runner execx.Runner, registry checks.Re
 	}
 
 	report := Report{
-		Tool:            ToolName,
-		Version:         Version,
-		GeneratedAt:     time.Now().UTC().Format(time.RFC3339),
-		Host:            host,
-		RunningServices: services,
-		Modules:         []ModuleReport{},
-		Results:         []checks.Result{},
+		Tool:        ToolName,
+		Version:     Version,
+		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
+		Host:        host,
+		Modules:     []ModuleReport{},
+		Inventory: Inventory{
+			Services: services,
+			Modules:  []ModuleReport{},
+		},
+		Results: []checks.Result{},
 		Meta: map[string]string{
 			"audit_mode": auditMode(options),
 		},
@@ -134,6 +144,7 @@ func Detect(ctx context.Context, runner execx.Runner, registry checks.Registry) 
 	report.TopFindings = nil
 	report.ClientFindings = nil
 	report.AdminFindings = nil
+	report.ModuleSummary = nil
 	return report
 }
 
