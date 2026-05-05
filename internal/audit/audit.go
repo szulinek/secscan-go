@@ -5,6 +5,8 @@ import (
 	"time"
 
 	"secscan/internal/checks"
+	"secscan/internal/checks/linux"
+	"secscan/internal/checks/nginx"
 	"secscan/internal/checks/service"
 	"secscan/internal/checks/ssh"
 	"secscan/internal/execx"
@@ -33,6 +35,11 @@ type Report struct {
 	Results         []checks.Result   `json:"results"`
 	Errors          []string          `json:"errors,omitempty"`
 	Summary         map[string]int    `json:"summary,omitempty"`
+	SeverityCounts  map[string]int    `json:"severity_counts"`
+	Score           int               `json:"score"`
+	TopFindings     []checks.Result   `json:"top_findings"`
+	ClientFindings  []checks.Result   `json:"client_findings"`
+	AdminFindings   []checks.Result   `json:"admin_findings"`
 	Meta            map[string]string `json:"meta,omitempty"`
 }
 
@@ -42,7 +49,9 @@ type Options struct {
 
 func DefaultRegistry() checks.Registry {
 	modules := []checks.Module{
+		linux.NewModule(),
 		ssh.NewModule(),
+		nginx.NewModule(),
 	}
 	modules = append(modules, service.DefaultModules()...)
 
@@ -68,13 +77,6 @@ func RunWithOptions(ctx context.Context, runner execx.Runner, registry checks.Re
 		RunningServices: services,
 		Modules:         []ModuleReport{},
 		Results:         []checks.Result{},
-		Summary: map[string]int{
-			string(checks.StatusPass):  0,
-			string(checks.StatusWarn):  0,
-			string(checks.StatusFail):  0,
-			string(checks.StatusInfo):  0,
-			string(checks.StatusError): 0,
-		},
 		Meta: map[string]string{
 			"audit_mode": auditMode(options),
 		},
@@ -108,10 +110,10 @@ func RunWithOptions(ctx context.Context, runner execx.Runner, registry checks.Re
 		for _, check := range module.Checks() {
 			result := check.Run(checkCtx)
 			report.Results = append(report.Results, result)
-			report.Summary[string(result.Status)]++
 		}
 	}
 
+	PrepareReport(&report)
 	return report
 }
 
@@ -119,6 +121,11 @@ func Detect(ctx context.Context, runner execx.Runner, registry checks.Registry) 
 	report := Run(ctx, runner, registry)
 	report.Results = []checks.Result{}
 	report.Summary = nil
+	report.SeverityCounts = nil
+	report.Score = 0
+	report.TopFindings = nil
+	report.ClientFindings = nil
+	report.AdminFindings = nil
 	return report
 }
 

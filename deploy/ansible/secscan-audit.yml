@@ -18,7 +18,7 @@
         mode: "0755"
 
     - name: Run secscan audit
-      ansible.builtin.command: "{{ secscan_remote_path }} audit{{ ' --all' if secscan_all_modules else '' }}"
+      ansible.builtin.command: "{{ secscan_remote_path }} audit{{ ' --all' if secscan_all_modules else '' }} --format json"
       register: secscan_audit
       changed_when: false
 

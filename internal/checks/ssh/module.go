@@ -86,17 +86,29 @@ func parseSSHDConfig(output string) map[string]string {
 
 func configErrorResult(id, title string, err error) checks.Result {
 	result := checks.NewResult(id, moduleID, service, title, checks.SeverityHigh, checks.StatusError)
+	result.Category = checks.CategorySSH
 	result.Summary = "Could not read effective sshd configuration."
+	result.Impact = "SSH hardening could not be verified, so remote access risk is unknown."
+	result.Recommendation = "Run secscan with privileges that can execute sshd -T, then retry the audit."
+	result.Remediation = result.Recommendation
+	result.ClientSummary = "SSH security settings could not be verified."
+	result.AdminDetails = "Command failed: sshd -T\n" + err.Error()
+	result.HiddenInClientReport = true
 	result.Error = err.Error()
-	result.Remediation = "Run secscan with privileges that can execute sshd -T, then retry the audit."
 	return result
 }
 
 func missingKeyResult(id, title, key string) checks.Result {
 	result := checks.NewResult(id, moduleID, service, title, checks.SeverityMedium, checks.StatusError)
+	result.Category = checks.CategorySSH
 	result.Summary = "Could not find expected sshd option in effective configuration."
+	result.Impact = "The SSH hardening state could not be reliably assessed."
+	result.Recommendation = "Verify the local OpenSSH server version and sshd -T output."
+	result.Remediation = result.Recommendation
 	result.Evidence = key + " missing from sshd -T output"
-	result.Remediation = "Verify the local OpenSSH server version and sshd -T output."
+	result.ClientSummary = "SSH security settings could not be verified."
+	result.AdminDetails = "Expected key missing from effective sshd configuration: " + key
+	result.HiddenInClientReport = true
 	return result
 }
 
@@ -124,16 +136,22 @@ func (c checkPermitRootLogin) Run(ctx checks.Context) checks.Result {
 	}
 
 	result := checks.NewResult(c.ID(), moduleID, service, c.Title(), checks.SeverityHigh, checks.StatusPass)
+	result.Category = checks.CategorySSH
 	result.Evidence = "permitrootlogin=" + value
-	result.Remediation = "Set PermitRootLogin no in sshd_config and reload sshd."
+	result.Impact = "Direct root SSH access increases the blast radius of credential theft and brute-force attacks."
+	result.Recommendation = "Set PermitRootLogin no in sshd_config and reload sshd."
+	result.Remediation = result.Recommendation
+	result.AdminDetails = "Checked effective OpenSSH configuration using sshd -T."
 
 	if value == "yes" {
 		result.Status = checks.StatusFail
 		result.Summary = "Root login over SSH is enabled."
+		result.ClientSummary = "Direct root login over SSH is enabled."
 		return result
 	}
 
 	result.Summary = "Root login over SSH is not explicitly enabled."
+	result.ClientSummary = "Direct root login over SSH is not enabled."
 	return result
 }
 
@@ -161,16 +179,22 @@ func (c checkPasswordAuthentication) Run(ctx checks.Context) checks.Result {
 	}
 
 	result := checks.NewResult(c.ID(), moduleID, service, c.Title(), checks.SeverityMedium, checks.StatusPass)
+	result.Category = checks.CategorySSH
 	result.Evidence = "passwordauthentication=" + value
-	result.Remediation = "Prefer key-based SSH login and set PasswordAuthentication no when operationally possible."
+	result.Impact = "Password SSH login increases exposure to brute-force and credential reuse attacks."
+	result.Recommendation = "Prefer key-based SSH login and set PasswordAuthentication no when operationally possible."
+	result.Remediation = result.Recommendation
+	result.AdminDetails = "Checked effective OpenSSH configuration using sshd -T."
 
 	if value == "yes" {
 		result.Status = checks.StatusWarn
 		result.Summary = "Password based SSH login is enabled."
+		result.ClientSummary = "SSH password login is enabled."
 		return result
 	}
 
 	result.Summary = "Password based SSH login is not enabled."
+	result.ClientSummary = "SSH password login is not enabled."
 	return result
 }
 
@@ -198,15 +222,21 @@ func (c checkPermitEmptyPasswords) Run(ctx checks.Context) checks.Result {
 	}
 
 	result := checks.NewResult(c.ID(), moduleID, service, c.Title(), checks.SeverityHigh, checks.StatusPass)
+	result.Category = checks.CategorySSH
 	result.Evidence = "permitemptypasswords=" + value
-	result.Remediation = "Set PermitEmptyPasswords no in sshd_config and reload sshd."
+	result.Impact = "Accounts without passwords create an immediate unauthorized-access risk if reachable through SSH."
+	result.Recommendation = "Set PermitEmptyPasswords no in sshd_config and reload sshd."
+	result.Remediation = result.Recommendation
+	result.AdminDetails = "Checked effective OpenSSH configuration using sshd -T."
 
 	if value != "no" {
 		result.Status = checks.StatusFail
 		result.Summary = "SSH accounts with empty passwords are permitted."
+		result.ClientSummary = "SSH would allow accounts with empty passwords."
 		return result
 	}
 
 	result.Summary = "SSH accounts with empty passwords are not permitted."
+	result.ClientSummary = "SSH accounts with empty passwords are not permitted."
 	return result
 }

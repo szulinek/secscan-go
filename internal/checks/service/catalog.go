@@ -1,24 +1,16 @@
 package service
 
-import "secscan/internal/checks"
+import (
+	"secscan/internal/checks"
+)
 
 func DefaultModules() []checks.Module {
 	return []checks.Module{
 		New(Definition{
-			ID:        "nginx",
-			Name:      "Nginx",
-			Service:   "nginx",
-			UnitNames: []string{"nginx.service"},
-			DetectPaths: []string{
-				"/usr/sbin/nginx",
-				"/etc/nginx/nginx.conf",
-				"/usr/local/nginx/conf/nginx.conf",
-			},
-		}),
-		New(Definition{
 			ID:        "php_fpm",
 			Name:      "PHP-FPM",
 			Service:   "php-fpm",
+			Category:  checks.CategoryWeb,
 			UnitNames: []string{"php-fpm.service"},
 			UnitGlobs: []string{"php*-fpm.service"},
 			DetectPaths: []string{
@@ -37,6 +29,7 @@ func DefaultModules() []checks.Module {
 			ID:        "directadmin",
 			Name:      "DirectAdmin",
 			Service:   "directadmin",
+			Category:  checks.CategoryCompliance,
 			UnitNames: []string{"directadmin.service"},
 			DetectPaths: []string{
 				"/usr/local/directadmin/directadmin",
@@ -47,6 +40,7 @@ func DefaultModules() []checks.Module {
 			ID:        "mysql_mariadb",
 			Name:      "MySQL / MariaDB",
 			Service:   "mysql/mariadb",
+			Category:  checks.CategoryDatabase,
 			UnitNames: []string{"mysql.service", "mariadb.service", "mysqld.service"},
 			DetectPaths: []string{
 				"/usr/sbin/mysqld",
@@ -59,6 +53,7 @@ func DefaultModules() []checks.Module {
 			ID:        "exim",
 			Name:      "Exim",
 			Service:   "exim",
+			Category:  checks.CategoryMail,
 			UnitNames: []string{"exim.service", "exim4.service"},
 			UnitGlobs: []string{"exim*.service"},
 			DetectPaths: []string{
@@ -73,6 +68,7 @@ func DefaultModules() []checks.Module {
 			ID:        "dovecot",
 			Name:      "Dovecot",
 			Service:   "dovecot",
+			Category:  checks.CategoryMail,
 			UnitNames: []string{"dovecot.service"},
 			DetectPaths: []string{
 				"/usr/sbin/dovecot",
@@ -84,6 +80,7 @@ func DefaultModules() []checks.Module {
 			ID:        "redis",
 			Name:      "Redis",
 			Service:   "redis",
+			Category:  checks.CategoryCache,
 			UnitNames: []string{"redis.service", "redis-server.service"},
 			UnitGlobs: []string{"redis*.service"},
 			DetectPaths: []string{
@@ -95,6 +92,7 @@ func DefaultModules() []checks.Module {
 			ID:        "named_bind",
 			Name:      "Named / BIND",
 			Service:   "named/bind",
+			Category:  checks.CategorySystem,
 			UnitNames: []string{"named.service", "bind9.service", "named-chroot.service"},
 			DetectPaths: []string{
 				"/usr/sbin/named",
@@ -106,6 +104,7 @@ func DefaultModules() []checks.Module {
 			ID:        "pure_ftpd",
 			Name:      "Pure-FTPd",
 			Service:   "pure-ftpd",
+			Category:  checks.CategorySystem,
 			UnitNames: []string{"pure-ftpd.service", "pure-ftpd-mysql.service"},
 			UnitGlobs: []string{"pure-ftpd*.service"},
 			DetectPaths: []string{
@@ -115,9 +114,10 @@ func DefaultModules() []checks.Module {
 			},
 		}),
 		New(Definition{
-			ID:      "firewall_csf_lfd",
-			Name:    "Firewall / CSF-LFD",
-			Service: "firewall/csf-lfd",
+			ID:       "firewall_csf_lfd",
+			Name:     "Firewall / CSF-LFD",
+			Service:  "firewall/csf-lfd",
+			Category: checks.CategoryFirewall,
 			UnitNames: []string{
 				"csf.service",
 				"lfd.service",

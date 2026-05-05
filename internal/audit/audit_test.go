@@ -48,6 +48,10 @@ func TestRunExecutesSSHDChecksWhenServiceDetected(t *testing.T) {
 	if report.Summary["warn"] != 1 {
 		t.Fatalf("expected 1 warning check, got %d", report.Summary["warn"])
 	}
+
+	if report.Score != 96 {
+		t.Fatalf("expected score 96, got %d", report.Score)
+	}
 }
 
 func TestRunWithOptionsExecutesAllModulesWhenServiceIsNotDetected(t *testing.T) {
@@ -61,19 +65,19 @@ func TestRunWithOptionsExecutesAllModulesWhenServiceIsNotDetected(t *testing.T) 
 	}
 
 	report := RunWithOptions(context.Background(), runner, DefaultRegistry(), Options{AllModules: true})
-	if len(report.Modules) != 11 {
-		t.Fatalf("expected 11 modules, got %d", len(report.Modules))
+	if len(report.Modules) != 12 {
+		t.Fatalf("expected 12 modules, got %d", len(report.Modules))
 	}
 
-	if len(report.Results) != 13 {
-		t.Fatalf("expected 13 checks, got %d", len(report.Results))
+	if len(report.Results) != 16 {
+		t.Fatalf("expected 16 checks, got %d", len(report.Results))
 	}
 
-	if report.Modules[0].Detected {
+	if report.Modules[1].Detected {
 		t.Fatal("expected sshd module to be reported as not detected")
 	}
 
-	if !report.Modules[0].Selected {
+	if !report.Modules[1].Selected {
 		t.Fatal("expected sshd module to be selected by all-modules mode")
 	}
 
@@ -82,10 +86,67 @@ func TestRunWithOptionsExecutesAllModulesWhenServiceIsNotDetected(t *testing.T) 
 	}
 
 	if report.Summary["pass"] != 3 {
-		t.Fatalf("expected 3 passing checks, got %d", report.Summary["pass"])
+		t.Fatalf("expected 3 passing ssh checks, got %d", report.Summary["pass"])
+	}
+}
+
+func TestPrepareReportScoresAndClassifiesFindings(t *testing.T) {
+	report := Report{
+		Results: []checks.Result{
+			{
+				ID:       "critical.fail",
+				ModuleID: "x",
+				Title:    "Critical failure",
+				Category: checks.CategorySystem,
+				Severity: checks.SeverityCritical,
+				Status:   checks.StatusFail,
+				Summary:  "critical",
+			},
+			{
+				ID:       "high.warn",
+				ModuleID: "x",
+				Title:    "High warning",
+				Category: checks.CategorySystem,
+				Severity: checks.SeverityHigh,
+				Status:   checks.StatusWarn,
+				Summary:  "warning",
+			},
+			{
+				ID:                   "hidden.fail",
+				ModuleID:             "x",
+				Title:                "Hidden failure",
+				Category:             checks.CategorySystem,
+				Severity:             checks.SeverityLow,
+				Status:               checks.StatusFail,
+				Summary:              "hidden",
+				HiddenInClientReport: true,
+			},
+			{
+				ID:       "info",
+				ModuleID: "x",
+				Title:    "Info",
+				Category: checks.CategorySystem,
+				Severity: checks.SeverityInfo,
+				Status:   checks.StatusInfo,
+				Summary:  "info",
+			},
+		},
 	}
 
-	if report.Summary["info"] != 10 {
-		t.Fatalf("expected 10 info checks, got %d", report.Summary["info"])
+	PrepareReport(&report)
+	if report.Score != 65 {
+		t.Fatalf("expected score 65, got %d", report.Score)
+	}
+	if len(report.TopFindings) != 3 {
+		t.Fatalf("expected 3 top findings, got %d", len(report.TopFindings))
+	}
+	if len(report.ClientFindings) != 2 {
+		t.Fatalf("expected 2 client findings, got %d", len(report.ClientFindings))
+	}
+	if len(report.AdminFindings) != 4 {
+		t.Fatalf("expected 4 admin findings, got %d", len(report.AdminFindings))
+	}
+	if report.SeverityCounts["critical"] != 1 || report.SeverityCounts["high"] != 1 || report.SeverityCounts["low"] != 1 {
+		t.Fatalf("unexpected severity counts: %#v", report.SeverityCounts)
 	}
 }

@@ -13,6 +13,7 @@ type Definition struct {
 	ID              string
 	Name            string
 	Service         string
+	Category        checks.Category
 	UnitNames       []string
 	UnitGlobs       []string
 	DetectPaths     []string
@@ -44,6 +45,14 @@ func (m Module) Checks() []checks.Check {
 	return []checks.Check{
 		serviceDetectedCheck{module: m},
 	}
+}
+
+func (m Module) category() checks.Category {
+	if m.definition.Category != "" {
+		return m.definition.Category
+	}
+
+	return checks.CategorySystem
 }
 
 func (m Module) serviceName() string {
@@ -135,13 +144,21 @@ func (c serviceDetectedCheck) Run(ctx checks.Context) checks.Result {
 		checks.SeverityInfo,
 		checks.StatusInfo,
 	)
+	result.Category = c.module.category()
 	result.Evidence = evidence
+	result.Impact = "Inventory signal only; this does not indicate a security problem by itself."
+	result.Recommendation = "Use service-specific checks to assess the security posture of this component."
+	result.HiddenInClientReport = true
 
 	if detected {
 		result.Summary = c.module.Name() + " was detected."
+		result.ClientSummary = c.module.Name() + " is present on the server."
+		result.AdminDetails = "Detection evidence: " + evidence
 		return result
 	}
 
 	result.Summary = c.module.Name() + " was not detected."
+	result.ClientSummary = c.module.Name() + " was not detected."
+	result.AdminDetails = "No matching running systemd unit or known file path was found."
 	return result
 }

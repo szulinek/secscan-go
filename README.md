@@ -6,18 +6,19 @@ and DirectAdmin servers as the first target.
 The current version is intentionally simple:
 
 - one binary, no daemon and no agent running in the background
-- CLI commands: `audit`, `detect`, `version`
+- CLI commands: `audit`, `detect`, `report`, `version`
 - host detection from `/etc/os-release`, `runtime.GOOS`, `runtime.GOARCH`
 - running service detection through `systemctl list-units --type=service --state=running`
 - modular checks through `Module` and `Check` interfaces
 - first deep-check module: `sshd`
+- Linux and Nginx baseline checks
 - detection-only modules for common DirectAdmin/Linux services
 - JSON output on stdout
+- HTML reports for client/admin views
 
 Not included yet:
 
-- HTML/PDF reports
-- GUI report
+- PDF reports
 - SMTP delivery
 - central panel
 - uploads
@@ -46,13 +47,21 @@ Detect host and running services:
 Run the audit and print JSON:
 
 ```bash
-sudo ./secscan audit
+sudo ./secscan audit --format json
 ```
 
 Run every registered module, even when a matching service was not detected:
 
 ```bash
-sudo ./secscan audit --all
+sudo ./secscan audit --all --format json
+```
+
+Save an audit and render HTML reports:
+
+```bash
+sudo ./secscan audit --all --format json > audit.json
+./secscan report --input audit.json --format html --type client > client-report.html
+./secscan report --input audit.json --format html --type admin > admin-report.html
 ```
 
 Print version:
@@ -76,11 +85,19 @@ SSH checks:
 - `PasswordAuthentication != yes` as `warn`
 - `PermitEmptyPasswords == no`
 
+Linux checks:
+
+- unattended-upgrades installed/enabled
+- host firewall detected through CSF/LFD, nftables, iptables, or UFW signals
+
+Nginx checks:
+
+- `server_tokens off` checked through `nginx -T`
+
 Detection-only modules currently emit one INFO check named `Service detected`.
 They are intentionally shallow so deeper security checks can be added module by
 module later:
 
-- `nginx`
 - `php_fpm`
 - `directadmin`
 - `mysql_mariadb`
@@ -124,21 +141,27 @@ Reports are saved locally on the Ansible controller:
 deploy/ansible/reports/<inventory_hostname>.json
 ```
 
+Render one of the collected reports:
+
+```bash
+./secscan report --input deploy/ansible/reports/server1.json --format html --type client > client-report.html
+./secscan report --input deploy/ansible/reports/server1.json --format html --type admin > admin-report.html
+```
+
 ## Future direction
 
-The next natural step is to add report renderers without changing the check
-modules. The JSON report should remain the stable data contract, while renderers
-turn the same findings into customer-facing output:
+The JSON report is the stable data contract. HTML client/admin rendering is
+implemented on top of that contract, and the next renderers should consume the
+same fields:
 
-- `report/json` for machine-readable output
-- `report/html` for a client/admin GUI-style report
 - `report/pdf` for a client-ready PDF audit report
 - `report/smtp` for sending the generated PDF/HTML report to a configured email address
 
 The intended future flow:
 
 ```bash
-sudo ./secscan audit --html --smtp-to admin@example.com
+sudo ./secscan audit --all --format json > audit.json
+./secscan report --input audit.json --format pdf --type client --smtp-to admin@example.com
 ```
 
-For now, the JSON report is the stable contract that later renderers can consume.
+PDF and SMTP are not implemented yet.
