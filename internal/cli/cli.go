@@ -13,6 +13,7 @@ import (
 
 	"secscan/internal/audit"
 	"secscan/internal/execx"
+	"secscan/internal/report/batchreport"
 	"secscan/internal/report/htmlreport"
 	"secscan/internal/report/pdfreport"
 	"secscan/internal/report/smtpreport"
@@ -32,6 +33,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runDetect(args[1:], stdout, stderr)
 	case "report":
 		return runReport(args[1:], stdout, stderr)
+	case "batch-report":
+		return runBatchReport(args[1:], stdout, stderr)
 	case "send-report":
 		return runSendReport(args[1:], stdout, stderr)
 	case "version":
@@ -195,6 +198,69 @@ func runSendReport(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+func runBatchReport(args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("batch-report", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	inputDir := flags.String("input-dir", "", "directory with JSON audit reports")
+	format := flags.String("format", "html", "batch report format: html or pdf")
+	reportType := flags.String("type", "client", "report type: client or admin")
+	output := flags.String("output", "", "output file path")
+	wkhtmltopdf := flags.String("wkhtmltopdf", "wkhtmltopdf", "path to wkhtmltopdf binary for PDF output")
+	if err := flags.Parse(args); err != nil {
+		return 2
+	}
+	if *inputDir == "" {
+		fmt.Fprintln(stderr, "missing required --input-dir reports")
+		return 2
+	}
+	if *output == "" {
+		fmt.Fprintln(stderr, "missing required --output file")
+		return 2
+	}
+	if *format != "html" && *format != "pdf" {
+		fmt.Fprintf(stderr, "unsupported batch report format: %s\n", *format)
+		return 2
+	}
+	if *reportType != string(htmlreport.TypeClient) && *reportType != string(htmlreport.TypeAdmin) {
+		fmt.Fprintf(stderr, "unsupported report type: %s\n", *reportType)
+		return 2
+	}
+
+	reports, err := batchreport.LoadReports(*inputDir)
+	if err != nil {
+		fmt.Fprintf(stderr, "load batch reports: %v\n", err)
+		return 1
+	}
+
+	file, err := os.Create(*output)
+	if err != nil {
+		fmt.Fprintf(stderr, "create output: %v\n", err)
+		return 1
+	}
+	defer file.Close()
+
+	switch *format {
+	case "html":
+		if err := batchreport.Render(file, reports, htmlreport.Type(*reportType)); err != nil {
+			fmt.Fprintf(stderr, "render batch report: %v\n", err)
+			return 1
+		}
+	case "pdf":
+		var html bytes.Buffer
+		if err := batchreport.Render(&html, reports, htmlreport.Type(*reportType)); err != nil {
+			fmt.Fprintf(stderr, "render batch report: %v\n", err)
+			return 1
+		}
+		if err := pdfreport.RenderHTML(file, html.Bytes(), pdfreport.Options{Binary: *wkhtmltopdf}); err != nil {
+			fmt.Fprintf(stderr, "render batch pdf: %v\n", err)
+			return 1
+		}
+	}
+
+	fmt.Fprintf(stdout, "wrote %s batch report for %d host(s) to %s\n", *format, len(reports), *output)
+	return 0
+}
+
 func readAuditReport(path string) (audit.Report, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -228,6 +294,7 @@ Usage:
   secscan detect [--timeout 30s]
   secscan report --input audit.json --format html --type client
   secscan report --input audit.json --format pdf --type client > report.pdf
+  secscan batch-report --input-dir reports --format pdf --type client --output client-audit.pdf
   secscan send-report --input audit.json --type client --smtp-config config/smtp.json --to client@example.com
   secscan report --input audit.json --format html --type admin
   secscan version
@@ -236,6 +303,7 @@ Commands:
   audit    detect host/services, run matching checks, print JSON
   detect   detect host/services/modules only, print JSON
   report   render a JSON audit into a client or admin HTML/PDF report
+  batch-report render many JSON audits into one client or admin HTML/PDF report
   send-report render a client/admin PDF report and send it through SMTP
   version  print secscan version
 

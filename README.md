@@ -6,7 +6,7 @@ and DirectAdmin servers as the first target.
 The current version is intentionally simple:
 
 - one binary, no daemon and no agent running in the background
-- CLI commands: `audit`, `detect`, `report`, `version`
+- CLI commands: `audit`, `detect`, `report`, `batch-report`, `send-report`, `version`
 - host detection from `/etc/os-release`, `runtime.GOOS`, `runtime.GOARCH`
 - hostname and non-loopback IP address inventory
 - running service detection through `systemctl list-units --type=service --state=running`
@@ -16,6 +16,7 @@ The current version is intentionally simple:
 - detection-only modules for common DirectAdmin/Linux services
 - JSON output on stdout
 - HTML and PDF reports for client/admin views
+- batch HTML/PDF reports from many Ansible JSON files
 - SMTP delivery for client PDF reports
 
 Not included yet:
@@ -64,6 +65,16 @@ sudo ./secscan audit --all --format json > audit.json
 ./secscan report --input audit.json --format html --type admin > admin-report.html
 ```
 
+Build one client report from a directory of Ansible JSON reports:
+
+```bash
+./secscan batch-report \
+  --input-dir deploy/ansible/reports \
+  --format html \
+  --type client \
+  --output client-audit.html
+```
+
 Render a PDF report:
 
 ```bash
@@ -72,6 +83,7 @@ sudo apt-get install -y wkhtmltopdf
 
 ./secscan report --input audit.json --format pdf --type client > client-report.pdf
 ./secscan report --input audit.json --format pdf --type admin > admin-report.pdf
+./secscan batch-report --input-dir deploy/ansible/reports --format pdf --type client --output client-audit.pdf
 ```
 
 If `wkhtmltopdf` is not in `PATH`, pass it explicitly:
@@ -141,8 +153,12 @@ SSH checks:
 
 Linux checks:
 
+- OS version from `/etc/os-release`
+- kernel version through `uname -r`
+- available Debian/Ubuntu security updates through a safe `apt-get -s` simulation
 - unattended-upgrades installed/enabled
-- host firewall detected through CSF/LFD, nftables, iptables, or UFW signals
+- active host firewall status through CSF/LFD, nftables, iptables, or UFW signals
+- brute-force protection daemon through fail2ban or CrowdSec running services
 
 Nginx checks:
 
@@ -200,6 +216,16 @@ Render one of the collected reports:
 ```bash
 ./secscan report --input deploy/ansible/reports/server1.json --format html --type client > client-report.html
 ./secscan report --input deploy/ansible/reports/server1.json --format html --type admin > admin-report.html
+```
+
+Render one combined client report from all collected JSON files:
+
+```bash
+./secscan batch-report \
+  --input-dir deploy/ansible/reports \
+  --format pdf \
+  --type client \
+  --output client-audit.pdf
 ```
 
 Render and send a client PDF:
