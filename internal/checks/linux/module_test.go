@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"secscan/internal/checks"
 	"secscan/internal/system"
@@ -233,6 +234,189 @@ func TestSudoersRiskyEntriesCheck(t *testing.T) {
 	}
 }
 
+func TestUnknownUsersCheck(t *testing.T) {
+	paths := withLinuxFixturePaths(t)
+	ctx := checks.Context{Context: context.Background(), Host: linuxHost()}
+
+	writeFixtureFile(t, paths.passwdPath, 0644, strings.Join([]string{
+		"root:x:0:0:root:/root:/bin/bash",
+		"lh:x:1000:1000:lh:/home/lh:/bin/bash",
+		"daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin",
+	}, "\n"))
+	result := checkUnknownUsers{}.Run(ctx)
+	if result.Status != checks.StatusInfo {
+		t.Fatalf("expected info status for allowlisted users, got %s", result.Status)
+	}
+	assertCompleteResult(t, result)
+	if result.Evidence != "lh:1000:/bin/bash" {
+		t.Fatalf("unexpected info evidence: %s", result.Evidence)
+	}
+
+	writeFixtureFile(t, paths.passwdPath, 0644, strings.Join([]string{
+		"root:x:0:0:root:/root:/bin/bash",
+		"lh:x:1000:1000:lh:/home/lh:/bin/bash",
+		"stranger:x:1001:1001:stranger:/home/stranger:/bin/bash",
+	}, "\n"))
+	result = checkUnknownUsers{}.Run(ctx)
+	if result.Status != checks.StatusWarn {
+		t.Fatalf("expected warn status for unknown user, got %s", result.Status)
+	}
+	assertCompleteResult(t, result)
+	if result.Severity != checks.SeverityMedium {
+		t.Fatalf("unknown user warning should be medium, got %s", result.Severity)
+	}
+	if !strings.Contains(result.Evidence, "stranger:1001:/bin/bash") || strings.Contains(result.Evidence, "lh:1000") {
+		t.Fatalf("unexpected warn evidence: %s", result.Evidence)
+	}
+}
+
+func TestAppArmorStatusCheck(t *testing.T) {
+	ctx := checks.Context{
+		Context: context.Background(),
+		Host:    linuxHost(),
+		Runner:  mockRunner{outputs: map[string]string{"aa-status": "apparmor module is loaded.\n12 profiles are loaded.\n"}},
+	}
+
+	result := checkAppArmorStatus{}.Run(ctx)
+	if result.Status != checks.StatusPass {
+		t.Fatalf("expected pass status, got %s", result.Status)
+	}
+	assertCompleteResult(t, result)
+	if result.Evidence != "aa-status=active" {
+		t.Fatalf("unexpected pass evidence: %s", result.Evidence)
+	}
+
+	ctx.Runner = mockRunner{outputs: map[string]string{"aa-status": "apparmor module is not loaded.\n"}}
+	result = checkAppArmorStatus{}.Run(ctx)
+	if result.Status != checks.StatusWarn {
+		t.Fatalf("expected warn status, got %s", result.Status)
+	}
+	assertCompleteResult(t, result)
+	if result.Evidence != "aa-status=inactive" {
+		t.Fatalf("unexpected warn evidence: %s", result.Evidence)
+	}
+
+	ctx.Runner = mockRunner{}
+	result = checkAppArmorStatus{}.Run(ctx)
+	if result.Status != checks.StatusNotApplicable {
+		t.Fatalf("expected not_applicable status, got %s", result.Status)
+	}
+	assertCompleteResult(t, result)
+	if result.Evidence != "apparmor=not_installed" {
+		t.Fatalf("unexpected not_applicable evidence: %s", result.Evidence)
+	}
+}
+
+func TestAuthLogRecentLoginsCheck(t *testing.T) {
+	paths := withLinuxFixturePaths(t)
+	ctx := checks.Context{Context: context.Background(), Host: linuxHost()}
+
+	writeFixtureFile(t, paths.authLogPath, 0644, strings.Join([]string{
+		"Apr 20 10:00:00 host sshd[100]: Accepted publickey for deploy from 203.0.113.10 port 45000 ssh2",
+		"Apr 20 10:01:00 host sshd[101]: Failed password for invalid user test from 203.0.113.20 port 45001 ssh2",
+	}, "\n"))
+	writeFixtureFile(t, paths.authLogRotatedPath, 0644, "")
+	result := checkAuthLogRecentLogins{}.Run(ctx)
+	if result.Status != checks.StatusInfo {
+		t.Fatalf("expected info status, got %s", result.Status)
+	}
+	assertCompleteResult(t, result)
+	if result.Evidence != "accepted_count=1; failed_count=1" {
+		t.Fatalf("unexpected info evidence: %s", result.Evidence)
+	}
+
+	failed := make([]string, 0, 101)
+	for i := 0; i < 101; i++ {
+		failed = append(failed, "Apr 20 10:01:00 host sshd[101]: Failed password for invalid user test from 203.0.113.20 port 45001 ssh2")
+	}
+	writeFixtureFile(t, paths.authLogPath, 0644, strings.Join(failed, "\n"))
+	result = checkAuthLogRecentLogins{}.Run(ctx)
+	if result.Status != checks.StatusWarn {
+		t.Fatalf("expected warn status, got %s", result.Status)
+	}
+	assertCompleteResult(t, result)
+	if result.Evidence != "accepted_count=0; failed_count=101" {
+		t.Fatalf("unexpected warn evidence: %s", result.Evidence)
+	}
+
+	if err := os.Remove(paths.authLogPath); err != nil {
+		t.Fatalf("remove auth log fixture: %v", err)
+	}
+	if err := os.Remove(paths.authLogRotatedPath); err != nil {
+		t.Fatalf("remove rotated auth log fixture: %v", err)
+	}
+	result = checkAuthLogRecentLogins{}.Run(ctx)
+	if result.Status != checks.StatusNotApplicable {
+		t.Fatalf("expected not_applicable status, got %s", result.Status)
+	}
+	assertCompleteResult(t, result)
+	if result.Evidence != "auth_log=not_found" {
+		t.Fatalf("unexpected not_applicable evidence: %s", result.Evidence)
+	}
+}
+
+func TestForkbombLimitsCheck(t *testing.T) {
+	paths := withLinuxFixturePaths(t)
+	ctx := checks.Context{Context: context.Background(), Host: linuxHost()}
+
+	result := checkForkbombLimits{}.Run(ctx)
+	if result.Status != checks.StatusPass {
+		t.Fatalf("expected pass status, got %s", result.Status)
+	}
+	assertCompleteResult(t, result)
+	if !strings.Contains(result.Evidence, "limits.conf:nproc=4096") {
+		t.Fatalf("unexpected pass evidence: %s", result.Evidence)
+	}
+
+	writeFixtureFile(t, paths.limitsConfPath, 0644, "# no nproc limit here\n")
+	result = checkForkbombLimits{}.Run(ctx)
+	if result.Status != checks.StatusWarn {
+		t.Fatalf("expected warn status, got %s", result.Status)
+	}
+	assertCompleteResult(t, result)
+	if result.Evidence != "nproc_limits=not_found" {
+		t.Fatalf("unexpected warn evidence: %s", result.Evidence)
+	}
+}
+
+func TestProcessSnapshotCheck(t *testing.T) {
+	ctx := checks.Context{
+		Context: context.Background(),
+		Host:    linuxHost(),
+		Runner: mockRunner{outputs: map[string]string{"ps aux": strings.Join([]string{
+			"USER PID %CPU %MEM VSZ RSS TTY STAT START TIME COMMAND",
+			"root 1 0.1 0.2 1000 100 ? Ss Apr20 00:01 /sbin/init",
+			"www-data 200 3.0 4.5 2000 200 ? S Apr20 00:02 php-fpm: pool www",
+		}, "\n")}},
+	}
+
+	result := checkProcessSnapshot{}.Run(ctx)
+	if result.Status != checks.StatusInfo {
+		t.Fatalf("expected info status, got %s", result.Status)
+	}
+	assertCompleteResult(t, result)
+	if !strings.Contains(result.Evidence, "top=www-data:200:cpu=3.0:mem=4.5:php-fpm: pool www") {
+		t.Fatalf("unexpected info evidence: %s", result.Evidence)
+	}
+
+	ctx.Runner = mockRunner{outputs: map[string]string{"ps aux": strings.Join([]string{
+		"USER PID %CPU %MEM VSZ RSS TTY STAT START TIME COMMAND",
+		"root 300 0.5 0.1 1000 100 ? S Apr20 00:01 /tmp/.cache/runner",
+		"mysql 400 8.0 20.0 2000 200 ? S Apr20 00:02 /usr/sbin/mysqld",
+	}, "\n")}}
+	result = checkProcessSnapshot{}.Run(ctx)
+	if result.Status != checks.StatusWarn {
+		t.Fatalf("expected warn status, got %s", result.Status)
+	}
+	assertCompleteResult(t, result)
+	if result.Severity != checks.SeverityMedium {
+		t.Fatalf("suspicious process warning should be medium, got %s", result.Severity)
+	}
+	if !strings.Contains(result.Evidence, "suspicious=root:300") || !strings.Contains(result.Evidence, "/tmp/.cache/runner") {
+		t.Fatalf("unexpected warn evidence: %s", result.Evidence)
+	}
+}
+
 func TestFirewallStatusPassWarnError(t *testing.T) {
 	base := checks.Context{
 		Context: context.Background(),
@@ -340,6 +524,8 @@ func TestLinuxChecksDoNotLeaveDuplicateOrStaleMessages(t *testing.T) {
 			"dpkg-query -W -f=${Status} unattended-upgrades":   "install ok installed",
 			"systemctl is-enabled unattended-upgrades.service": "enabled\n",
 			"ss -tulpn":        `tcp LISTEN 0 128 0.0.0.0:22 0.0.0.0:* users:(("sshd",pid=100,fd=3))`,
+			"aa-status":        "apparmor module is loaded.\n12 profiles are loaded.\n",
+			"ps aux":           "USER PID %CPU %MEM VSZ RSS TTY STAT START TIME COMMAND\nroot 1 0.1 0.2 1000 100 ? Ss Apr20 00:01 /sbin/init\n",
 			"ufw status":       "Status: inactive\n",
 			"nft list ruleset": "",
 			"iptables -S":      "-P INPUT ACCEPT\n-P FORWARD ACCEPT\n-P OUTPUT ACCEPT\n",
@@ -356,6 +542,11 @@ func TestLinuxChecksDoNotLeaveDuplicateOrStaleMessages(t *testing.T) {
 		checkListeningPorts{},
 		checkConfigPermissions{},
 		checkSudoersRiskyEntries{},
+		checkUnknownUsers{},
+		checkAppArmorStatus{},
+		checkAuthLogRecentLogins{},
+		checkForkbombLimits{},
+		checkProcessSnapshot{},
 	} {
 		result := check.Run(ctx)
 		assertCompleteResult(t, result)
@@ -366,8 +557,13 @@ func TestLinuxChecksDoNotLeaveDuplicateOrStaleMessages(t *testing.T) {
 }
 
 type fixturePaths struct {
-	sudoersPath      string
-	sudoersDropInDir string
+	passwdPath         string
+	sudoersPath        string
+	sudoersDropInDir   string
+	authLogPath        string
+	authLogRotatedPath string
+	limitsConfPath     string
+	limitsDropInDir    string
 }
 
 func withLinuxFixturePaths(t *testing.T) fixturePaths {
@@ -376,19 +572,28 @@ func withLinuxFixturePaths(t *testing.T) fixturePaths {
 	dir := t.TempDir()
 	sshDir := filepath.Join(dir, "ssh")
 	sudoersDir := filepath.Join(dir, "sudoers.d")
+	limitsDir := filepath.Join(dir, "limits.d")
 	if err := os.MkdirAll(sshDir, 0700); err != nil {
 		t.Fatalf("create ssh fixture dir: %v", err)
 	}
 	if err := os.MkdirAll(sudoersDir, 0700); err != nil {
 		t.Fatalf("create sudoers fixture dir: %v", err)
 	}
+	if err := os.MkdirAll(limitsDir, 0700); err != nil {
+		t.Fatalf("create limits fixture dir: %v", err)
+	}
 
 	paths := fixturePaths{
-		sudoersPath:      filepath.Join(dir, "sudoers"),
-		sudoersDropInDir: sudoersDir,
+		passwdPath:         filepath.Join(dir, "passwd"),
+		sudoersPath:        filepath.Join(dir, "sudoers"),
+		sudoersDropInDir:   sudoersDir,
+		authLogPath:        filepath.Join(dir, "auth.log"),
+		authLogRotatedPath: filepath.Join(dir, "auth.log.1"),
+		limitsConfPath:     filepath.Join(dir, "limits.conf"),
+		limitsDropInDir:    limitsDir,
 	}
 	targets := []configPermissionTarget{
-		{Key: "passwd", Path: filepath.Join(dir, "passwd"), MaxMode: 0644},
+		{Key: "passwd", Path: paths.passwdPath, MaxMode: 0644},
 		{Key: "shadow", Path: filepath.Join(dir, "shadow"), MaxMode: 0640, Critical: true},
 		{Key: "sudoers", Path: paths.sudoersPath, MaxMode: 0440, Critical: true},
 		{Key: "sshd_config", Path: filepath.Join(sshDir, "sshd_config"), MaxMode: 0644},
@@ -397,17 +602,37 @@ func withLinuxFixturePaths(t *testing.T) fixturePaths {
 	writeFixtureFile(t, targets[1].Path, 0640, "root:*:19000:0:99999:7:::\n")
 	writeFixtureFile(t, targets[2].Path, 0440, "root ALL=(root) /usr/bin/systemctl\n")
 	writeFixtureFile(t, targets[3].Path, 0644, "PermitRootLogin no\n")
+	writeFixtureFile(t, paths.authLogPath, 0644, "Apr 20 10:00:00 host sshd[100]: Accepted publickey for deploy from 203.0.113.10 port 45000 ssh2\n")
+	writeFixtureFile(t, paths.authLogRotatedPath, 0644, "")
+	writeFixtureFile(t, paths.limitsConfPath, 0644, "* hard nproc 4096\n")
 
 	originalTargets := configPermissionTargets
 	originalSudoersPath := sudoersPath
 	originalSudoersDropInPath := sudoersDropInPath
+	originalPasswdPath := passwdPath
+	originalAuthLogPaths := authLogPaths
+	originalLimitsConfPath := limitsConfPath
+	originalLimitsDropInPath := limitsDropInPath
+	originalNowFunc := nowFunc
 	configPermissionTargets = targets
 	sudoersPath = paths.sudoersPath
 	sudoersDropInPath = paths.sudoersDropInDir
+	passwdPath = paths.passwdPath
+	authLogPaths = []string{paths.authLogPath, paths.authLogRotatedPath}
+	limitsConfPath = paths.limitsConfPath
+	limitsDropInPath = paths.limitsDropInDir
+	nowFunc = func() time.Time {
+		return time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC)
+	}
 	t.Cleanup(func() {
 		configPermissionTargets = originalTargets
 		sudoersPath = originalSudoersPath
 		sudoersDropInPath = originalSudoersDropInPath
+		passwdPath = originalPasswdPath
+		authLogPaths = originalAuthLogPaths
+		limitsConfPath = originalLimitsConfPath
+		limitsDropInPath = originalLimitsDropInPath
+		nowFunc = originalNowFunc
 	})
 
 	return paths

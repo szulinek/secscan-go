@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"secscan/internal/checks"
 	"secscan/internal/system"
@@ -35,6 +36,11 @@ var configPermissionTargets = []configPermissionTarget{
 var (
 	sudoersPath       = "/etc/sudoers"
 	sudoersDropInPath = "/etc/sudoers.d"
+	passwdPath        = "/etc/passwd"
+	authLogPaths      = []string{"/var/log/auth.log", "/var/log/auth.log.1"}
+	limitsConfPath    = "/etc/security/limits.conf"
+	limitsDropInPath  = "/etc/security/limits.d"
+	nowFunc           = time.Now
 )
 
 type Module struct{}
@@ -66,6 +72,11 @@ func (m Module) Checks() []checks.Check {
 		checkListeningPorts{},
 		checkConfigPermissions{},
 		checkSudoersRiskyEntries{},
+		checkUnknownUsers{},
+		checkAppArmorStatus{},
+		checkAuthLogRecentLogins{},
+		checkForkbombLimits{},
+		checkProcessSnapshot{},
 	}
 }
 
@@ -412,6 +423,286 @@ func (c checkSudoersRiskyEntries) Run(ctx checks.Context) checks.Result {
 
 	result.Summary = "No risky sudoers entries were found."
 	result.Evidence = "sudoers_risks=none"
+	return result
+}
+
+type checkUnknownUsers struct{}
+
+func (c checkUnknownUsers) ID() string {
+	return "linux.unknown_users"
+}
+
+func (c checkUnknownUsers) Title() string {
+	return "Interactive users reviewed"
+}
+
+func (c checkUnknownUsers) Run(ctx checks.Context) checks.Result {
+	result := checks.NewResult(c.ID(), moduleID, service, c.Title(), checks.SeverityInfo, checks.StatusInfo)
+	result.Category = checks.CategorySystem
+	result.Impact = "Unexpected interactive users can indicate unmanaged access or stale accounts."
+	result.Recommendation = "Review interactive users and remove or document accounts that are no longer needed."
+	result.Remediation = result.Recommendation
+	result.ClientSummary = "Interactive system users were reviewed."
+	result.AdminDetails = "Parsed passwd entries with UID >= 1000 and shells other than nologin or false."
+	result.HiddenInClientReport = true
+
+	if !isLinuxHost(ctx.Host) {
+		result.Status = checks.StatusNotApplicable
+		result.Summary = "Interactive user check applies to Linux systems only."
+		result.Evidence = "goos=" + ctx.Host.GOOS
+		return result
+	}
+
+	users, err := interactivePasswdUsers(passwdPath)
+	if err != nil {
+		result.Status = checks.StatusError
+		result.Summary = "Interactive users could not be checked."
+		result.ClientSummary = "Interactive system users could not be verified."
+		result.Evidence = "passwd=read_error"
+		result.AdminDetails = "Failed to parse " + passwdPath + ". " + err.Error()
+		result.Error = err.Error()
+		return result
+	}
+
+	unknown := unknownInteractiveUsers(users)
+	result.Evidence = passwdUsersEvidence(users)
+	if len(unknown) > 0 {
+		result.Title = "Unknown interactive users detected"
+		result.Status = checks.StatusWarn
+		result.Severity = checks.SeverityMedium
+		result.Summary = "Interactive users outside the allowlist were detected."
+		result.ClientSummary = "Some interactive system users need administrator review."
+		result.Evidence = passwdUsersEvidence(unknown)
+		result.HiddenInClientReport = false
+		return result
+	}
+
+	result.Summary = "No interactive users outside the allowlist were detected."
+	return result
+}
+
+type checkAppArmorStatus struct{}
+
+func (c checkAppArmorStatus) ID() string {
+	return "linux.apparmor_status"
+}
+
+func (c checkAppArmorStatus) Title() string {
+	return "AppArmor is active"
+}
+
+func (c checkAppArmorStatus) Run(ctx checks.Context) checks.Result {
+	result := checks.NewResult(c.ID(), moduleID, service, c.Title(), checks.SeverityMedium, checks.StatusPass)
+	result.Category = checks.CategorySystem
+	result.Impact = "Mandatory access controls reduce the impact of compromised services."
+	result.Recommendation = "Enable AppArmor and keep service profiles loaded where supported."
+	result.Remediation = result.Recommendation
+	result.ClientSummary = "AppArmor appears to be active."
+	result.AdminDetails = "Checked aa-status first, then systemctl status apparmor."
+
+	if !isLinuxHost(ctx.Host) {
+		result.Status = checks.StatusNotApplicable
+		result.Severity = checks.SeverityInfo
+		result.Summary = "AppArmor check applies to Linux systems only."
+		result.Evidence = "goos=" + ctx.Host.GOOS
+		result.HiddenInClientReport = true
+		return result
+	}
+
+	status := detectAppArmorStatus(ctx)
+	result.Evidence = status.Evidence
+	switch status.State {
+	case "active":
+		result.Summary = "AppArmor appears to be active."
+		return result
+	case "missing":
+		result.Status = checks.StatusNotApplicable
+		result.Severity = checks.SeverityInfo
+		result.Summary = "AppArmor was not detected on this system."
+		result.ClientSummary = "AppArmor is not installed or not available on this system."
+		result.HiddenInClientReport = true
+		return result
+	default:
+		result.Title = "AppArmor is not active"
+		result.Status = checks.StatusWarn
+		result.Summary = "AppArmor is installed but not confirmed as active."
+		result.ClientSummary = "AppArmor is not confirmed as active."
+		return result
+	}
+}
+
+type checkAuthLogRecentLogins struct{}
+
+func (c checkAuthLogRecentLogins) ID() string {
+	return "linux.auth_log_recent_logins"
+}
+
+func (c checkAuthLogRecentLogins) Title() string {
+	return "Recent SSH login activity"
+}
+
+func (c checkAuthLogRecentLogins) Run(ctx checks.Context) checks.Result {
+	result := checks.NewResult(c.ID(), moduleID, service, c.Title(), checks.SeverityInfo, checks.StatusInfo)
+	result.Category = checks.CategorySSH
+	result.Impact = "A high number of failed SSH logins can indicate password guessing or exposure to automated attacks."
+	result.Recommendation = "Review SSH exposure, enforce key-based access, and keep brute-force protection enabled."
+	result.Remediation = result.Recommendation
+	result.ClientSummary = "Recent SSH login activity was reviewed."
+	result.AdminDetails = "Parsed auth.log and auth.log.1 for accepted and failed SSH logins from the last 60 days."
+	result.HiddenInClientReport = true
+
+	if !isLinuxHost(ctx.Host) {
+		result.Status = checks.StatusNotApplicable
+		result.Summary = "Auth log check applies to Linux systems only."
+		result.Evidence = "goos=" + ctx.Host.GOOS
+		return result
+	}
+
+	counts, err := recentSSHLoginCounts(authLogPaths, nowFunc())
+	if err != nil {
+		result.Status = checks.StatusError
+		result.Summary = "Recent SSH login activity could not be checked."
+		result.ClientSummary = "Recent SSH login activity could not be verified."
+		result.Evidence = "auth_log=read_error"
+		result.AdminDetails = "Failed to read auth log files. " + err.Error()
+		result.Error = err.Error()
+		return result
+	}
+	if !counts.FoundLog {
+		result.Status = checks.StatusNotApplicable
+		result.Summary = "Auth log files were not found."
+		result.Evidence = "auth_log=not_found"
+		return result
+	}
+
+	result.Evidence = fmt.Sprintf("accepted_count=%d; failed_count=%d", counts.Accepted, counts.Failed)
+	if counts.Failed > 100 {
+		result.Title = "High number of failed SSH logins"
+		result.Status = checks.StatusWarn
+		result.Severity = checks.SeverityMedium
+		result.Summary = "A high number of failed SSH logins was detected in recent auth logs."
+		result.ClientSummary = "SSH is seeing many failed login attempts."
+		result.HiddenInClientReport = false
+		return result
+	}
+
+	result.Summary = "Recent SSH login activity is within the expected range."
+	return result
+}
+
+type checkForkbombLimits struct{}
+
+func (c checkForkbombLimits) ID() string {
+	return "linux.forkbomb_limits"
+}
+
+func (c checkForkbombLimits) Title() string {
+	return "Process limits are configured"
+}
+
+func (c checkForkbombLimits) Run(ctx checks.Context) checks.Result {
+	result := checks.NewResult(c.ID(), moduleID, service, c.Title(), checks.SeverityMedium, checks.StatusPass)
+	result.Category = checks.CategorySystem
+	result.Impact = "Missing nproc limits can make process exhaustion easier during abuse or application failure."
+	result.Recommendation = "Define sane nproc limits in limits.conf or limits.d for interactive and service users."
+	result.Remediation = result.Recommendation
+	result.ClientSummary = "Process count limits appear to be configured."
+	result.AdminDetails = "Checked /etc/security/limits.conf and regular files in /etc/security/limits.d for nproc entries."
+
+	if !isLinuxHost(ctx.Host) {
+		result.Status = checks.StatusNotApplicable
+		result.Severity = checks.SeverityInfo
+		result.Summary = "Process limit check applies to Linux systems only."
+		result.Evidence = "goos=" + ctx.Host.GOOS
+		result.HiddenInClientReport = true
+		return result
+	}
+
+	entries, readErrors := nprocLimitEntries()
+	if len(readErrors) > 0 {
+		result.Status = checks.StatusError
+		result.Summary = "Process limit files could not be checked."
+		result.ClientSummary = "Process count limits could not be verified."
+		result.Evidence = strings.Join(readErrors, "; ")
+		result.AdminDetails = "Failed to read one or more limits files. " + result.Evidence
+		result.Error = result.Evidence
+		result.HiddenInClientReport = true
+		return result
+	}
+
+	if len(entries) == 0 {
+		result.Title = "Process limits are not configured"
+		result.Status = checks.StatusWarn
+		result.Summary = "No nproc limits were found in limits configuration."
+		result.ClientSummary = "Process count limits are not confirmed."
+		result.Evidence = "nproc_limits=not_found"
+		return result
+	}
+
+	result.Summary = "nproc limits were found in limits configuration."
+	result.Evidence = strings.Join(entries, "; ")
+	return result
+}
+
+type checkProcessSnapshot struct{}
+
+func (c checkProcessSnapshot) ID() string {
+	return "linux.process_snapshot"
+}
+
+func (c checkProcessSnapshot) Title() string {
+	return "Process snapshot reviewed"
+}
+
+func (c checkProcessSnapshot) Run(ctx checks.Context) checks.Result {
+	result := checks.NewResult(c.ID(), moduleID, service, c.Title(), checks.SeverityInfo, checks.StatusInfo)
+	result.Category = checks.CategorySystem
+	result.Impact = "Suspicious root-owned processes can indicate compromise or unsafe temporary execution."
+	result.Recommendation = "Review unusual root-owned processes and verify their executable path and owner."
+	result.Remediation = result.Recommendation
+	result.ClientSummary = "A process snapshot was collected for administrator review."
+	result.AdminDetails = "Collected ps aux output, summarized top CPU/MEM processes, and flagged root processes from temporary paths or deleted binaries."
+	result.HiddenInClientReport = true
+
+	if !isLinuxHost(ctx.Host) {
+		result.Status = checks.StatusNotApplicable
+		result.Summary = "Process snapshot check applies to Linux systems only."
+		result.Evidence = "goos=" + ctx.Host.GOOS
+		return result
+	}
+
+	output, err := ctx.Runner.Run(ctx.Context, "ps", "aux")
+	if err != nil {
+		result.Status = checks.StatusError
+		result.Summary = "Process snapshot could not be collected."
+		result.ClientSummary = "Running processes could not be verified."
+		result.Evidence = "ps_aux=failed"
+		result.AdminDetails = "Command failed: ps aux\n" + err.Error()
+		result.Error = err.Error()
+		return result
+	}
+
+	processes := parsePSAux(string(output))
+	if len(processes) == 0 {
+		result.Summary = "No processes were parsed from ps output."
+		result.Evidence = "processes=none"
+		return result
+	}
+
+	suspicious := suspiciousRootProcesses(processes)
+	if len(suspicious) > 0 {
+		result.Title = "Suspicious root-owned process detected"
+		result.Status = checks.StatusWarn
+		result.Severity = checks.SeverityMedium
+		result.Summary = "A root-owned process with an unusual executable path was detected."
+		result.ClientSummary = "One root-owned process needs administrator review."
+		result.Evidence = "suspicious=" + processEvidence(suspicious, 3) + "; top=" + processEvidence(topProcesses(processes, 3), 3)
+		result.HiddenInClientReport = false
+		return result
+	}
+
+	result.Summary = "No suspicious root-owned processes were detected."
+	result.Evidence = "top=" + processEvidence(topProcesses(processes, 5), 5)
 	return result
 }
 
@@ -812,6 +1103,372 @@ func sudoersEvidenceName(path string) string {
 		return "sudoers"
 	}
 	return base
+}
+
+type passwdUser struct {
+	Name  string
+	UID   int
+	Shell string
+}
+
+var knownInteractiveUsers = map[string]struct{}{
+	"root":   {},
+	"lh":     {},
+	"admin":  {},
+	"deploy": {},
+}
+
+func interactivePasswdUsers(path string) ([]passwdUser, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+
+	users := []passwdUser{}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		fields := strings.Split(line, ":")
+		if len(fields) < 7 {
+			continue
+		}
+		uid, err := strconv.Atoi(fields[2])
+		if err != nil || uid < 1000 {
+			continue
+		}
+		shell := strings.TrimSpace(fields[6])
+		if isDisabledShell(shell) {
+			continue
+		}
+
+		users = append(users, passwdUser{
+			Name:  fields[0],
+			UID:   uid,
+			Shell: shell,
+		})
+	}
+
+	sort.SliceStable(users, func(i, j int) bool {
+		if users[i].UID == users[j].UID {
+			return users[i].Name < users[j].Name
+		}
+		return users[i].UID < users[j].UID
+	})
+	return users, nil
+}
+
+func isDisabledShell(shell string) bool {
+	base := strings.ToLower(filepath.Base(strings.TrimSpace(shell)))
+	return base == "nologin" || base == "false"
+}
+
+func unknownInteractiveUsers(users []passwdUser) []passwdUser {
+	unknown := []passwdUser{}
+	for _, user := range users {
+		if _, ok := knownInteractiveUsers[user.Name]; ok {
+			continue
+		}
+		unknown = append(unknown, user)
+	}
+	return unknown
+}
+
+func passwdUsersEvidence(users []passwdUser) string {
+	if len(users) == 0 {
+		return "interactive_users=none"
+	}
+
+	values := []string{}
+	for _, user := range users {
+		values = append(values, fmt.Sprintf("%s:%d:%s", user.Name, user.UID, user.Shell))
+	}
+	return strings.Join(values, "; ")
+}
+
+type appArmorStatus struct {
+	State    string
+	Evidence string
+}
+
+func detectAppArmorStatus(ctx checks.Context) appArmorStatus {
+	output, err := ctx.Runner.Run(ctx.Context, "aa-status")
+	if err == nil {
+		return appArmorStatusFromOutput("aa-status", string(output))
+	}
+	if !isMissingCommandError(err) {
+		status := appArmorStatusFromOutput("aa-status", err.Error())
+		if status.State != "missing" {
+			return status
+		}
+	}
+
+	output, err = ctx.Runner.Run(ctx.Context, "systemctl", "status", "apparmor")
+	if err == nil {
+		return appArmorStatusFromOutput("apparmor", string(output))
+	}
+	if isMissingCommandError(err) || strings.Contains(strings.ToLower(err.Error()), "could not be found") {
+		return appArmorStatus{State: "missing", Evidence: "apparmor=not_installed"}
+	}
+
+	status := appArmorStatusFromOutput("apparmor", err.Error())
+	if status.State == "missing" {
+		status.State = "inactive"
+		status.Evidence = "apparmor=not_active"
+	}
+	return status
+}
+
+func appArmorStatusFromOutput(source, output string) appArmorStatus {
+	lower := strings.ToLower(output)
+	switch {
+	case strings.Contains(lower, "apparmor module is loaded") ||
+		strings.Contains(lower, "profiles are loaded") ||
+		strings.Contains(lower, "active: active"):
+		return appArmorStatus{State: "active", Evidence: source + "=active"}
+	case strings.Contains(lower, "apparmor module is not loaded") ||
+		strings.Contains(lower, "not loaded") ||
+		strings.Contains(lower, "active: inactive") ||
+		strings.Contains(lower, "active: failed"):
+		return appArmorStatus{State: "inactive", Evidence: source + "=inactive"}
+	case strings.Contains(lower, "not-found") ||
+		strings.Contains(lower, "could not be found") ||
+		strings.Contains(lower, "not installed"):
+		return appArmorStatus{State: "missing", Evidence: source + "=not_installed"}
+	default:
+		return appArmorStatus{State: "inactive", Evidence: source + "=not_confirmed"}
+	}
+}
+
+type authLogCounts struct {
+	FoundLog bool
+	Accepted int
+	Failed   int
+}
+
+func recentSSHLoginCounts(paths []string, now time.Time) (authLogCounts, error) {
+	counts := authLogCounts{}
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return counts, err
+		}
+
+		counts.FoundLog = true
+		addAuthLogCounts(&counts, string(data), now)
+	}
+	return counts, nil
+}
+
+func addAuthLogCounts(counts *authLogCounts, content string, now time.Time) {
+	cutoff := now.AddDate(0, 0, -60)
+	for _, line := range strings.Split(content, "\n") {
+		if !strings.Contains(line, "sshd") {
+			continue
+		}
+		timestamp, ok := parseSyslogTimestamp(line, now)
+		if !ok || timestamp.Before(cutoff) || timestamp.After(now.Add(24*time.Hour)) {
+			continue
+		}
+
+		lower := strings.ToLower(line)
+		if strings.Contains(lower, "accepted ") {
+			counts.Accepted++
+			continue
+		}
+		if strings.Contains(lower, "failed password") ||
+			strings.Contains(lower, "failed publickey") ||
+			strings.Contains(lower, "failed none") ||
+			strings.Contains(lower, "authentication failure") {
+			counts.Failed++
+		}
+	}
+}
+
+func parseSyslogTimestamp(line string, now time.Time) (time.Time, bool) {
+	if len(line) < len("Jan  2 15:04:05") {
+		return time.Time{}, false
+	}
+
+	parsed, err := time.ParseInLocation("Jan _2 15:04:05", line[:15], now.Location())
+	if err != nil {
+		return time.Time{}, false
+	}
+
+	timestamp := time.Date(now.Year(), parsed.Month(), parsed.Day(), parsed.Hour(), parsed.Minute(), parsed.Second(), 0, now.Location())
+	if timestamp.After(now.Add(24 * time.Hour)) {
+		timestamp = timestamp.AddDate(-1, 0, 0)
+	}
+	return timestamp, true
+}
+
+func nprocLimitEntries() ([]string, []string) {
+	files, err := limitsFiles()
+	if err != nil {
+		return nil, []string{"limits=glob_error"}
+	}
+
+	entries := []string{}
+	readErrors := []string{}
+	for _, path := range files {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			readErrors = append(readErrors, limitsEvidenceName(path)+"=read_error")
+			continue
+		}
+		entries = append(entries, nprocLimitLines(path, string(data))...)
+	}
+
+	return unique(entries), unique(readErrors)
+}
+
+func limitsFiles() ([]string, error) {
+	files := []string{}
+	if _, err := os.Stat(limitsConfPath); err == nil {
+		files = append(files, limitsConfPath)
+	} else if err != nil && !os.IsNotExist(err) {
+		return nil, err
+	}
+
+	matches, err := filepath.Glob(filepath.Join(limitsDropInPath, "*"))
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(matches)
+	for _, path := range matches {
+		info, err := os.Stat(path)
+		if err != nil || info.IsDir() {
+			continue
+		}
+		files = append(files, path)
+	}
+
+	return files, nil
+}
+
+func nprocLimitLines(path, content string) []string {
+	entries := []string{}
+	name := limitsEvidenceName(path)
+	for _, line := range strings.Split(content, "\n") {
+		line = stripSudoersComment(line)
+		if line == "" {
+			continue
+		}
+
+		fields := strings.Fields(line)
+		for i, field := range fields {
+			if field != "nproc" {
+				continue
+			}
+			value := "set"
+			if len(fields) > i+1 {
+				value = fields[i+1]
+			}
+			entries = append(entries, name+":nproc="+value)
+			break
+		}
+	}
+	return entries
+}
+
+func limitsEvidenceName(path string) string {
+	base := filepath.Base(path)
+	if base == "" || base == "." || base == string(filepath.Separator) {
+		return "limits"
+	}
+	return base
+}
+
+type processInfo struct {
+	User    string
+	PID     string
+	CPU     float64
+	Memory  float64
+	Command string
+}
+
+func parsePSAux(output string) []processInfo {
+	processes := []processInfo{}
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(strings.ToUpper(line), "USER ") {
+			continue
+		}
+
+		fields := strings.Fields(line)
+		if len(fields) < 11 {
+			continue
+		}
+		cpu, _ := strconv.ParseFloat(fields[2], 64)
+		memory, _ := strconv.ParseFloat(fields[3], 64)
+		processes = append(processes, processInfo{
+			User:    fields[0],
+			PID:     fields[1],
+			CPU:     cpu,
+			Memory:  memory,
+			Command: strings.Join(fields[10:], " "),
+		})
+	}
+	return processes
+}
+
+func topProcesses(processes []processInfo, limit int) []processInfo {
+	out := append([]processInfo(nil), processes...)
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].CPU == out[j].CPU {
+			return out[i].Memory > out[j].Memory
+		}
+		return out[i].CPU > out[j].CPU
+	})
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out
+}
+
+func suspiciousRootProcesses(processes []processInfo) []processInfo {
+	suspicious := []processInfo{}
+	for _, process := range processes {
+		if process.User != "root" {
+			continue
+		}
+		command := strings.ToLower(process.Command)
+		if strings.Contains(command, "/tmp/") ||
+			strings.Contains(command, "/dev/shm/") ||
+			strings.Contains(command, "(deleted)") ||
+			strings.Contains(command, " deleted") {
+			suspicious = append(suspicious, process)
+		}
+	}
+	return suspicious
+}
+
+func processEvidence(processes []processInfo, limit int) string {
+	if len(processes) == 0 {
+		return "none"
+	}
+	if len(processes) > limit {
+		processes = processes[:limit]
+	}
+
+	values := []string{}
+	for _, process := range processes {
+		values = append(values, fmt.Sprintf("%s:%s:cpu=%.1f:mem=%.1f:%s", process.User, process.PID, process.CPU, process.Memory, compactCommand(process.Command)))
+	}
+	return strings.Join(values, "; ")
+}
+
+func compactCommand(command string) string {
+	command = strings.Join(strings.Fields(command), " ")
+	if len(command) > 80 {
+		return command[:77] + "..."
+	}
+	return command
 }
 
 func aptPeriodicEnabled() bool {

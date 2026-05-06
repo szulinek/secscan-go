@@ -74,8 +74,8 @@ func TestRunWithOptionsExecutesAllModulesWhenServiceIsNotDetected(t *testing.T) 
 		t.Fatalf("expected 12 modules, got %d", len(report.Modules))
 	}
 
-	if len(report.Results) != 23 {
-		t.Fatalf("expected 23 checks, got %d", len(report.Results))
+	if len(report.Results) != 28 {
+		t.Fatalf("expected 28 checks, got %d", len(report.Results))
 	}
 
 	if report.Modules[1].Detected {
