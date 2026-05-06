@@ -20,6 +20,10 @@ func TestClientReportHidesInventoryAndInfo(t *testing.T) {
 	mustContain(t, html, "PermitRootLogin is enabled")
 	mustContain(t, html, "Disable direct root SSH login.")
 	mustContain(t, html, "Technical details")
+	mustContain(t, html, "Detected public ports")
+	mustContain(t, html, "8080/tcp")
+	mustContain(t, html, "8443/tcp")
+	mustContain(t, html, "devsrv")
 
 	mustNotContain(t, html, "Admin Inventory")
 	mustNotContain(t, html, "ssh.service")
@@ -44,11 +48,32 @@ func TestAdminReportShowsInventoryAndPassingChecks(t *testing.T) {
 	mustNotContain(t, html, "Service detected")
 }
 
+func TestOpenPortsParserIgnoresNonPortEvidence(t *testing.T) {
+	ports := openPorts(checks.Result{
+		ID:       "linux.listening_ports",
+		Evidence: "tcp/0.0.0.0/8080/devsrv; public_listeners=none; udp/::/5353/-",
+	})
+	if len(ports) != 2 {
+		t.Fatalf("expected two parsed ports, got %d", len(ports))
+	}
+	if ports[0].Label != "8080/tcp" || ports[0].Address != "0.0.0.0" || ports[0].Process != "devsrv" {
+		t.Fatalf("unexpected first port: %#v", ports[0])
+	}
+	if ports[1].Label != "5353/udp" || ports[1].Address != "::" || ports[1].Process != "" {
+		t.Fatalf("unexpected second port: %#v", ports[1])
+	}
+
+	if got := openPorts(checks.Result{ID: "nginx.server_tokens", Evidence: "tcp/0.0.0.0/8080/devsrv"}); len(got) != 0 {
+		t.Fatalf("non-listening-port finding should not render ports: %#v", got)
+	}
+}
+
 func renderTestReport(t *testing.T, reportType Type) string {
 	t.Helper()
 
 	modules := []audit.ModuleReport{
 		{ID: "sshd", Name: "OpenSSH server", Detected: true, Selected: true},
+		{ID: "linux", Name: "Linux baseline", Detected: true, Selected: true},
 		{ID: "nginx", Name: "Nginx", Detected: true, Selected: true},
 	}
 	report := audit.Report{
@@ -94,6 +119,19 @@ func renderTestReport(t *testing.T, reportType Type) string {
 				Recommendation: "Set server_tokens off.",
 				Evidence:       "server_tokens=on",
 				AdminDetails:   "Checked with nginx -T.",
+			},
+			{
+				ID:             "linux.listening_ports",
+				ModuleID:       "linux",
+				Service:        "linux",
+				Title:          "Unexpected public listening ports detected",
+				Category:       checks.CategoryFirewall,
+				Severity:       checks.SeverityMedium,
+				Status:         checks.StatusWarn,
+				ClientSummary:  "Unexpected public listening ports are exposed.",
+				Recommendation: "Close unnecessary public listeners or document and firewall them explicitly.",
+				Evidence:       "tcp/0.0.0.0/8080/devsrv; tcp/::/8443/proxy",
+				AdminDetails:   "Collected with ss -tulpn.",
 			},
 			{
 				ID:             "sshd.password_authentication",

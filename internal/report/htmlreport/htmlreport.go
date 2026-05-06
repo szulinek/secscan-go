@@ -45,6 +45,14 @@ type moduleSection struct {
 	PassingFindings []checks.Result
 }
 
+type openPortView struct {
+	Label   string
+	Proto   string
+	Address string
+	Port    string
+	Process string
+}
+
 func Render(w io.Writer, report audit.Report, reportType Type) error {
 	audit.PrepareReport(&report)
 	data := buildView(report, reportType)
@@ -166,6 +174,7 @@ var pageTemplate = template.Must(template.New("report").Funcs(template.FuncMap{
 	"scoreLabel":    scoreLabel,
 	"count":         severityCount,
 	"detectedLabel": detectedLabel,
+	"openPorts":     openPorts,
 }).Parse(`<!doctype html>
 <html lang="en">
 <head>
@@ -276,6 +285,33 @@ var pageTemplate = template.Must(template.New("report").Funcs(template.FuncMap{
     .risk-head, .module-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
     .risk-body { margin-top: 8px; max-width: 820px; }
     .recommendation { margin-top: 12px; padding: 12px 14px; background: #f8fafc; border: 1px solid var(--line); border-radius: 8px; }
+    .port-summary { margin-top: 12px; padding: 12px 14px; background: #fff; border: 1px solid var(--line); border-radius: 8px; }
+    .port-summary-label { color: #344054; font-size: 12px; font-weight: 800; text-transform: uppercase; }
+    .port-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+    .port-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      max-width: 100%;
+      padding: 6px 9px;
+      border: 1px solid #bfdbfe;
+      border-radius: 999px;
+      background: #eff6ff;
+      color: #1e3a8a;
+      font-size: 12px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+    .port-chip span { color: #475467; font-weight: 600; }
+    .port-chip em {
+      min-width: 0;
+      max-width: 180px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      font-style: normal;
+      color: #344054;
+      font-weight: 600;
+    }
     .badges { display: flex; gap: 7px; flex-wrap: wrap; justify-content: flex-end; align-items: center; }
     .badge {
       display: inline-flex;
@@ -331,6 +367,7 @@ var pageTemplate = template.Must(template.New("report").Funcs(template.FuncMap{
       .meta-grid, .summary, .inventory-grid { grid-template-columns: 1fr; }
       .score { width: 124px; height: 124px; font-size: 32px; }
       .badges { justify-content: flex-start; }
+      .port-chip { white-space: normal; }
     }
   </style>
 </head>
@@ -473,6 +510,16 @@ var pageTemplate = template.Must(template.New("report").Funcs(template.FuncMap{
     </div>
   </div>
   {{ if .Recommendation }}<div class="recommendation"><strong>Recommendation:</strong> {{ .Recommendation }}</div>{{ end }}
+  {{ with openPorts . }}
+  <div class="port-summary">
+    <div class="port-summary-label">Detected public ports</div>
+    <div class="port-chips">
+      {{ range . }}
+      <div class="port-chip"><strong>{{ .Label }}</strong><span>{{ .Address }}</span>{{ if .Process }}<em>{{ .Process }}</em>{{ end }}</div>
+      {{ end }}
+    </div>
+  </div>
+  {{ end }}
   <details>
     <summary>Technical details</summary>
     <div class="detail-grid">
@@ -609,4 +656,44 @@ func detectedLabel(detected bool) string {
 		return "detected"
 	}
 	return "not detected"
+}
+
+func openPorts(result checks.Result) []openPortView {
+	if result.ID != "linux.listening_ports" {
+		return nil
+	}
+
+	ports := []openPortView{}
+	for _, item := range strings.Split(result.Evidence, ";") {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+
+		parts := strings.SplitN(item, "/", 4)
+		if len(parts) != 4 {
+			continue
+		}
+
+		proto := strings.TrimSpace(parts[0])
+		address := strings.TrimSpace(parts[1])
+		port := strings.TrimSpace(parts[2])
+		process := strings.TrimSpace(parts[3])
+		if proto == "" || port == "" {
+			continue
+		}
+		if process == "-" || process == "unknown" {
+			process = ""
+		}
+
+		ports = append(ports, openPortView{
+			Label:   port + "/" + proto,
+			Proto:   proto,
+			Address: address,
+			Port:    port,
+			Process: process,
+		})
+	}
+
+	return ports
 }
