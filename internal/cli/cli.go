@@ -16,6 +16,7 @@ import (
 	"secscan/internal/report/batchreport"
 	"secscan/internal/report/htmlreport"
 	"secscan/internal/report/pdfreport"
+	"secscan/internal/report/publishreport"
 	"secscan/internal/report/smtpreport"
 )
 
@@ -37,6 +38,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runBatchReport(args[1:], stdout, stderr)
 	case "send-report":
 		return runSendReport(args[1:], stdout, stderr)
+	case "publish-report":
+		return runPublishReport(args[1:], stdout, stderr)
 	case "version":
 		fmt.Fprintf(stdout, "%s %s\n", audit.ToolName, audit.Version)
 		return 0
@@ -198,6 +201,51 @@ func runSendReport(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+func runPublishReport(args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("publish-report", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	input := flags.String("input", "", "input audit JSON file")
+	reportType := flags.String("type", string(htmlreport.TypeClient), "report type: client or admin")
+	allowAdmin := flags.Bool("allow-admin", false, "allow publishing admin report")
+	sshHost := flags.String("ssh-host", "", "SSH host for rsync upload")
+	sshUser := flags.String("ssh-user", "", "SSH user for rsync upload")
+	sshPort := flags.Int("ssh-port", 22, "SSH port for rsync upload")
+	remoteDir := flags.String("remote-dir", "", "remote directory for report upload")
+	publicBaseURL := flags.String("public-base-url", "", "public base URL for uploaded reports")
+	latest := flags.Bool("latest", false, "also upload the report as latest.html")
+	if err := flags.Parse(args); err != nil {
+		return 2
+	}
+
+	options := publishreport.Options{
+		Input:         *input,
+		ReportType:    htmlreport.Type(*reportType),
+		AllowAdmin:    *allowAdmin,
+		SSHHost:       *sshHost,
+		SSHUser:       *sshUser,
+		SSHPort:       *sshPort,
+		RemoteDir:     *remoteDir,
+		PublicBaseURL: *publicBaseURL,
+		Latest:        *latest,
+	}
+	if err := publishreport.Validate(options); err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+
+	report, err := readAuditReport(*input)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+
+	if _, err := publishreport.Publish(context.Background(), report, options, publishreport.LocalRunner{}, stdout); err != nil {
+		fmt.Fprintf(stderr, "publish report: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
 func runBatchReport(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("batch-report", flag.ContinueOnError)
 	flags.SetOutput(stderr)
@@ -296,6 +344,7 @@ Usage:
   secscan report --input audit.json --format pdf --type client > report.pdf
   secscan batch-report --input-dir reports --format pdf --type client --output client-audit.pdf
   secscan send-report --input audit.json --type client --smtp-config config/smtp.json --to client@example.com
+  secscan publish-report --input audit.json --ssh-host reports.example.pl --ssh-user lh --ssh-port 40022 --remote-dir /home/lh/domains/example.pl/public_html/audits --public-base-url https://example.pl/audits
   secscan report --input audit.json --format html --type admin
   secscan version
 
@@ -305,6 +354,7 @@ Commands:
   report   render a JSON audit into a client or admin HTML/PDF report
   batch-report render many JSON audits into one client or admin HTML/PDF report
   send-report render a client/admin PDF report and send it through SMTP
+  publish-report render a client HTML report and upload it through rsync/SSH
   version  print secscan version
 
 Audit flags:
