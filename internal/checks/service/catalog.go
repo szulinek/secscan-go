@@ -7,25 +7,6 @@ import (
 func DefaultModules() []checks.Module {
 	return []checks.Module{
 		New(Definition{
-			ID:        "php_fpm",
-			Name:      "PHP-FPM",
-			Service:   "php-fpm",
-			Category:  checks.CategoryWeb,
-			UnitNames: []string{"php-fpm.service"},
-			UnitGlobs: []string{"php*-fpm.service"},
-			DetectPaths: []string{
-				"/usr/sbin/php-fpm",
-				"/usr/local/php/sbin/php-fpm",
-			},
-			DetectPathGlobs: []string{
-				"/usr/sbin/php-fpm*",
-				"/etc/php/*/fpm/php-fpm.conf",
-				"/etc/php/*/fpm/pool.d",
-				"/usr/local/php*/sbin/php-fpm*",
-				"/usr/local/php*/etc/php-fpm.conf",
-			},
-		}),
-		New(Definition{
 			ID:        "directadmin",
 			Name:      "DirectAdmin",
 			Service:   "directadmin",
