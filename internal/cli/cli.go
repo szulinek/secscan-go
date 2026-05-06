@@ -17,6 +17,7 @@ import (
 	"secscan/internal/report/htmlreport"
 	"secscan/internal/report/pdfreport"
 	"secscan/internal/report/publishreport"
+	"secscan/internal/report/runreport"
 	"secscan/internal/report/smtpreport"
 )
 
@@ -40,6 +41,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runSendReport(args[1:], stdout, stderr)
 	case "publish-report":
 		return runPublishReport(args[1:], stdout, stderr)
+	case "run":
+		return runEndToEnd(args[1:], stdout, stderr)
 	case "version":
 		fmt.Fprintf(stdout, "%s %s\n", audit.ToolName, audit.Version)
 		return 0
@@ -246,6 +249,77 @@ func runPublishReport(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+func runEndToEnd(args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("run", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	timeout := flags.Duration("timeout", 30*time.Second, "command timeout")
+	allModules := false
+	flags.BoolVar(&allModules, "all", false, "run all registered modules")
+	flags.BoolVar(&allModules, "all-modules", false, "run all registered modules")
+	reportType := flags.String("type", string(htmlreport.TypeClient), "report type: client or admin")
+	allowAdmin := flags.Bool("allow-admin", false, "allow admin report")
+	outputDir := flags.String("output-dir", "reports", "directory for generated artifacts")
+	publish := flags.Bool("publish", false, "publish HTML report through rsync/SSH")
+	sshHost := flags.String("ssh-host", "", "SSH host for rsync upload")
+	sshUser := flags.String("ssh-user", "", "SSH user for rsync upload")
+	sshPort := flags.Int("ssh-port", 22, "SSH port for rsync upload")
+	remoteDir := flags.String("remote-dir", "", "remote directory for report upload")
+	publicBaseURL := flags.String("public-base-url", "", "public base URL for uploaded reports")
+	latest := flags.Bool("latest", false, "also upload latest.html when publishing")
+	smtpConfig := flags.String("smtp-config", "config/smtp.json", "SMTP config JSON file")
+	to := flags.String("to", "", "recipient email address; comma separated values are allowed")
+	noEmail := flags.Bool("no-email", false, "do not send email even when --to is provided")
+	pdf := flags.Bool("pdf", false, "also render PDF artifact")
+	keepArtifacts := flags.Bool("keep-artifacts", true, "keep generated local artifacts")
+	wkhtmltopdf := flags.String("wkhtmltopdf", "wkhtmltopdf", "path to wkhtmltopdf binary")
+	if err := flags.Parse(args); err != nil {
+		return 2
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
+	defer cancel()
+
+	options := runreport.Options{
+		AllModules:    allModules,
+		ReportType:    htmlreport.Type(*reportType),
+		AllowAdmin:    *allowAdmin,
+		OutputDir:     *outputDir,
+		Publish:       *publish,
+		Latest:        *latest,
+		To:            *to,
+		NoEmail:       *noEmail,
+		PDF:           *pdf,
+		KeepArtifacts: *keepArtifacts,
+		SMTPConfig:    *smtpConfig,
+		WKHTMLToPDF:   *wkhtmltopdf,
+		PublishOptions: publishreport.Options{
+			SSHHost:       *sshHost,
+			SSHUser:       *sshUser,
+			SSHPort:       *sshPort,
+			RemoteDir:     *remoteDir,
+			PublicBaseURL: *publicBaseURL,
+		},
+	}
+	result, err := runreport.Run(ctx, options, runreport.Dependencies{
+		Runner:   execx.LocalRunner{},
+		Registry: audit.DefaultRegistry(),
+	}, stdout)
+	if err != nil {
+		fmt.Fprintf(stderr, "run: %v\n", err)
+		return 1
+	}
+
+	fmt.Fprintf(stdout, "wrote audit JSON: %s\n", result.AuditPath)
+	fmt.Fprintf(stdout, "wrote HTML report: %s\n", result.HTMLPath)
+	if result.PDFPath != "" {
+		fmt.Fprintf(stdout, "wrote PDF report: %s\n", result.PDFPath)
+	}
+	if result.PublicURL != "" {
+		fmt.Fprintf(stdout, "published report: %s\n", result.PublicURL)
+	}
+	return 0
+}
+
 func runBatchReport(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("batch-report", flag.ContinueOnError)
 	flags.SetOutput(stderr)
@@ -345,6 +419,7 @@ Usage:
   secscan batch-report --input-dir reports --format pdf --type client --output client-audit.pdf
   secscan send-report --input audit.json --type client --smtp-config config/smtp.json --to client@example.com
   secscan publish-report --input audit.json --ssh-host reports.example.pl --ssh-user lh --ssh-port 40022 --remote-dir /home/lh/domains/example.pl/public_html/audits --public-base-url https://example.pl/audits
+  secscan run --all --type client --output-dir reports --publish --ssh-host reports.example.pl --ssh-user lh --ssh-port 40022 --remote-dir /home/lh/domains/example.pl/public_html/audits --public-base-url https://example.pl/audits --latest --smtp-config config/smtp.json --to client@example.com
   secscan report --input audit.json --format html --type admin
   secscan version
 
@@ -355,6 +430,7 @@ Commands:
   batch-report render many JSON audits into one client or admin HTML/PDF report
   send-report render a client/admin PDF report and send it through SMTP
   publish-report render a client HTML report and upload it through rsync/SSH
+  run      run audit, save artifacts, optionally publish and email
   version  print secscan version
 
 Audit flags:

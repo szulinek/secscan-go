@@ -61,3 +61,25 @@ func TestValidateRequiresRecipient(t *testing.T) {
 		t.Fatalf("expected recipient validation error, got %v", err)
 	}
 }
+
+func TestBuildMessageAllowsLinkOnlyEmail(t *testing.T) {
+	config := Config{Host: "smtp.example.com", Port: 587, From: "audit@example.com"}
+	message := Message{
+		To:      []string{"client@example.com"},
+		Subject: "Security Audit Report",
+		Body:    "Raport: https://example.pl/audits/latest.html",
+	}
+
+	payload, err := buildMessage(config, message)
+	if err != nil {
+		t.Fatalf("build message: %v", err)
+	}
+
+	value := string(payload)
+	if !strings.Contains(value, message.Body) {
+		t.Fatalf("expected message to contain link body")
+	}
+	if strings.Contains(value, "application/pdf") {
+		t.Fatalf("link-only email should not include PDF attachment")
+	}
+}

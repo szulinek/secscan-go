@@ -184,10 +184,7 @@ func validate(config Config, message Message) error {
 			return fmt.Errorf("invalid recipient address %q: %w", recipient, err)
 		}
 	}
-	if len(message.Attachment) == 0 {
-		return fmt.Errorf("pdf attachment is empty")
-	}
-	if message.AttachmentName == "" {
+	if len(message.Attachment) > 0 && message.AttachmentName == "" {
 		return fmt.Errorf("attachment name is required")
 	}
 	return nil
@@ -213,12 +210,14 @@ func buildMessage(config Config, message Message) ([]byte, error) {
 	out.WriteString(message.Body)
 	out.WriteString("\r\n\r\n")
 
-	out.WriteString("--" + boundary + "\r\n")
-	writeHeader(&out, "Content-Type", `application/pdf; name="`+escapeFilename(message.AttachmentName)+`"`)
-	writeHeader(&out, "Content-Disposition", `attachment; filename="`+escapeFilename(message.AttachmentName)+`"`)
-	writeHeader(&out, "Content-Transfer-Encoding", "base64")
-	out.WriteString("\r\n")
-	writeBase64Lines(&out, message.Attachment)
+	if len(message.Attachment) > 0 {
+		out.WriteString("--" + boundary + "\r\n")
+		writeHeader(&out, "Content-Type", `application/pdf; name="`+escapeFilename(message.AttachmentName)+`"`)
+		writeHeader(&out, "Content-Disposition", `attachment; filename="`+escapeFilename(message.AttachmentName)+`"`)
+		writeHeader(&out, "Content-Transfer-Encoding", "base64")
+		out.WriteString("\r\n")
+		writeBase64Lines(&out, message.Attachment)
+	}
 	out.WriteString("\r\n--" + boundary + "--\r\n")
 
 	return out.Bytes(), nil

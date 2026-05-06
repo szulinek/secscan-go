@@ -205,7 +205,7 @@ func remotePath(remoteDir, filename string) string {
 
 var unsafeFilenameChars = regexp.MustCompile(`[^a-zA-Z0-9._-]+`)
 
-func sanitizeFilenamePart(value string) string {
+func SanitizeFilenamePart(value string) string {
 	value = strings.TrimSpace(value)
 	value = unsafeFilenameChars.ReplaceAllString(value, "-")
 	value = strings.Trim(value, ".-_")
@@ -213,6 +213,10 @@ func sanitizeFilenamePart(value string) string {
 		return "host"
 	}
 	return value
+}
+
+func sanitizeFilenamePart(value string) string {
+	return SanitizeFilenamePart(value)
 }
 
 func randomHex(bytesCount int) (string, error) {
