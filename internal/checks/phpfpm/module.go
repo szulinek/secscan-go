@@ -119,6 +119,21 @@ func (c checkExposePHP) Run(ctx checks.Context) checks.Result {
 	result.Remediation = result.Recommendation
 	result.ClientSummary = "PHP version disclosure is disabled."
 	result.AdminDetails = "Checked expose_php in php.ini for discovered PHP-FPM installations."
+	result.RemediationSteps = []string{
+		"Edit php.ini for every active PHP-FPM version.",
+		"Set expose_php = Off.",
+		"Reload the relevant PHP-FPM service.",
+	}
+	result.References = []string{
+		"https://www.php.net/manual/en/ini.core.php#ini.expose-php",
+		"https://www.debian.org/doc/manuals/securing-debian-manual/",
+		"https://www.cisecurity.org/benchmark/debian_linux",
+	}
+	result.Automation = checks.Automation{
+		Shell:   "sudo sed -i 's/^\\s*expose_php\\s*=.*/expose_php = Off/' /usr/local/php*/lib/php.ini && sudo systemctl reload 'php*-fpm.service'",
+		Ansible: "- name: Disable expose_php\n  ansible.builtin.lineinfile:\n    path: '{{ php_ini_path }}'\n    regexp: '^\\s*expose_php\\s*='\n    line: 'expose_php = Off'\n  notify: reload php-fpm",
+		Chef:    "ruby_block 'disable expose_php' do\n  block { Chef::Util::FileEdit.new('/usr/local/php/lib/php.ini').search_file_replace_line(/^\\s*expose_php\\s*=/, 'expose_php = Off').write_file }\nend",
+	}
 
 	values := iniDirectiveValues(c.cache.load(), "expose_php", "On")
 	return applyINIExpectation(result, values, "expose_php", func(value string) bool {

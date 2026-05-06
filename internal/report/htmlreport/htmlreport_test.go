@@ -20,6 +20,12 @@ func TestClientReportHidesInventoryAndInfo(t *testing.T) {
 	mustContain(t, html, "PermitRootLogin is enabled")
 	mustContain(t, html, "Disable direct root SSH login.")
 	mustContain(t, html, "Technical details")
+	mustContain(t, html, "Remediation steps")
+	mustContain(t, html, "Edit /etc/ssh/sshd_config.")
+	mustContain(t, html, "References")
+	mustContain(t, html, "https://man.openbsd.org/sshd_config")
+	mustContain(t, html, "Automation snippets")
+	mustContain(t, html, "sshd -t")
 	mustContain(t, html, "Detected public ports")
 	mustContain(t, html, "8080/tcp")
 	mustContain(t, html, "8443/tcp")
@@ -93,15 +99,26 @@ func renderTestReport(t *testing.T, reportType Type) string {
 		},
 		Results: []checks.Result{
 			{
-				ID:                   "sshd.permit_root_login",
-				ModuleID:             "sshd",
-				Service:              "sshd",
-				Title:                "PermitRootLogin is enabled",
-				Category:             checks.CategorySSH,
-				Severity:             checks.SeverityHigh,
-				Status:               checks.StatusFail,
-				ClientSummary:        "Direct root login over SSH is enabled.",
-				Recommendation:       "Disable direct root SSH login.",
+				ID:             "sshd.permit_root_login",
+				ModuleID:       "sshd",
+				Service:        "sshd",
+				Title:          "PermitRootLogin is enabled",
+				Category:       checks.CategorySSH,
+				Severity:       checks.SeverityHigh,
+				Status:         checks.StatusFail,
+				ClientSummary:  "Direct root login over SSH is enabled.",
+				Recommendation: "Disable direct root SSH login.",
+				RemediationSteps: []string{
+					"Edit /etc/ssh/sshd_config.",
+					"Set PermitRootLogin no.",
+					"Validate with sshd -t and reload sshd.",
+				},
+				References: []string{"https://man.openbsd.org/sshd_config"},
+				Automation: checks.Automation{
+					Shell:   "sudo sshd -t && sudo systemctl reload sshd",
+					Ansible: "- name: Disable root SSH login",
+					Chef:    "service 'sshd'",
+				},
 				Impact:               "Root SSH login increases the blast radius of credential theft.",
 				Evidence:             "permitrootlogin=yes",
 				AdminDetails:         "Checked with sshd -T.",

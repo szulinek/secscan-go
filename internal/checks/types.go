@@ -62,6 +62,12 @@ type Check interface {
 	Run(ctx Context) Result
 }
 
+type Automation struct {
+	Shell   string `json:"shell,omitempty"`
+	Ansible string `json:"ansible,omitempty"`
+	Chef    string `json:"chef,omitempty"`
+}
+
 type Result struct {
 	ID       string `json:"id"`
 	ModuleID string `json:"module_id"`
@@ -81,6 +87,10 @@ type Result struct {
 	Remediation    string `json:"remediation,omitempty"`
 	Evidence       string `json:"evidence,omitempty"`
 	Error          string `json:"error,omitempty"`
+
+	RemediationSteps []string   `json:"remediation_steps,omitempty"`
+	References       []string   `json:"references,omitempty"`
+	Automation       Automation `json:"automation,omitempty"`
 
 	HiddenInClientReport bool `json:"hidden_in_client_report"`
 }
@@ -119,6 +129,8 @@ func (r *Result) Normalize() {
 	if r.Remediation == "" {
 		r.Remediation = r.Recommendation
 	}
+	r.RemediationSteps = compactStrings(r.RemediationSteps, 5)
+	r.References = compactStrings(r.References, 10)
 	if r.AdminDetails == "" {
 		parts := []string{}
 		if r.Summary != "" {
@@ -132,4 +144,19 @@ func (r *Result) Normalize() {
 		}
 		r.AdminDetails = strings.Join(parts, "\n")
 	}
+}
+
+func compactStrings(values []string, limit int) []string {
+	out := []string{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		out = append(out, value)
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	return out
 }

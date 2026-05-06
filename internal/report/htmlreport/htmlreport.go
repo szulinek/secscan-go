@@ -346,6 +346,19 @@ var pageTemplate = template.Must(template.New("report").Funcs(template.FuncMap{
     details summary { cursor: pointer; color: #344054; font-weight: 700; }
     details .detail-grid { display: grid; gap: 10px; margin-top: 10px; color: #344054; }
     .detail-grid div { white-space: pre-wrap; overflow-wrap: anywhere; }
+    .detail-list { margin: 6px 0 0; padding-left: 18px; white-space: normal; }
+    .detail-list li { margin: 3px 0; }
+    .automation-block { display: grid; gap: 8px; }
+    .automation-block pre {
+      margin: 4px 0 0;
+      padding: 10px;
+      border-radius: 8px;
+      background: #0f172a;
+      color: #e5e7eb;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      font-size: 12px;
+    }
     .empty { color: var(--muted); padding: 12px 0 0; }
     .inventory-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
     .inventory-card { padding: 18px; }
@@ -524,6 +537,23 @@ var pageTemplate = template.Must(template.New("report").Funcs(template.FuncMap{
     <summary>Technical details</summary>
     <div class="detail-grid">
       {{ if .Impact }}<div><strong>Impact:</strong> {{ .Impact }}</div>{{ end }}
+      {{ if .RemediationSteps }}
+      <div><strong>Remediation steps:</strong>
+        <ol class="detail-list">{{ range .RemediationSteps }}<li>{{ . }}</li>{{ end }}</ol>
+      </div>
+      {{ end }}
+      {{ if .References }}
+      <div><strong>References:</strong>
+        <ul class="detail-list">{{ range .References }}<li>{{ . }}</li>{{ end }}</ul>
+      </div>
+      {{ end }}
+      {{ if or .Automation.Shell .Automation.Ansible .Automation.Chef }}
+      <div class="automation-block"><strong>Automation snippets:</strong>
+        {{ if .Automation.Shell }}<div>Shell<pre>{{ .Automation.Shell }}</pre></div>{{ end }}
+        {{ if .Automation.Ansible }}<div>Ansible<pre>{{ .Automation.Ansible }}</pre></div>{{ end }}
+        {{ if .Automation.Chef }}<div>Chef<pre>{{ .Automation.Chef }}</pre></div>{{ end }}
+      </div>
+      {{ end }}
       {{ if .Evidence }}<div><strong>Evidence:</strong> {{ .Evidence }}</div>{{ end }}
       {{ if .AdminDetails }}<div><strong>Admin details:</strong> {{ .AdminDetails }}</div>{{ end }}
       {{ if .Error }}<div><strong>Error:</strong> {{ .Error }}</div>{{ end }}

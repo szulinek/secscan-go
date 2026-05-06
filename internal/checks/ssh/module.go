@@ -95,6 +95,7 @@ func configErrorResult(id, title string, err error) checks.Result {
 	result.AdminDetails = "Command failed: sshd -T\n" + err.Error()
 	result.HiddenInClientReport = true
 	result.Error = err.Error()
+	addSSHMetadata(&result, "sshd -T")
 	return result
 }
 
@@ -109,6 +110,7 @@ func missingKeyResult(id, title, key string) checks.Result {
 	result.ClientSummary = "SSH security settings could not be verified."
 	result.AdminDetails = "Expected key missing from effective sshd configuration: " + key
 	result.HiddenInClientReport = true
+	addSSHMetadata(&result, "sshd -T")
 	return result
 }
 
@@ -142,6 +144,7 @@ func (c checkPermitRootLogin) Run(ctx checks.Context) checks.Result {
 	result.Recommendation = "Set PermitRootLogin no in sshd_config and reload sshd."
 	result.Remediation = result.Recommendation
 	result.AdminDetails = "Checked effective OpenSSH configuration using sshd -T."
+	addSSHMetadata(&result, "PermitRootLogin no")
 
 	switch value {
 	case "no":
@@ -200,6 +203,7 @@ func (c checkPasswordAuthentication) Run(ctx checks.Context) checks.Result {
 	result.Recommendation = "Prefer key-based SSH login and set PasswordAuthentication no when operationally possible."
 	result.Remediation = result.Recommendation
 	result.AdminDetails = "Checked effective OpenSSH configuration using sshd -T."
+	addSSHMetadata(&result, "PasswordAuthentication no")
 
 	if value == "yes" {
 		result.Title = "PasswordAuthentication is enabled"
@@ -245,6 +249,7 @@ func (c checkPermitEmptyPasswords) Run(ctx checks.Context) checks.Result {
 	result.Recommendation = "Set PermitEmptyPasswords no in sshd_config and reload sshd."
 	result.Remediation = result.Recommendation
 	result.AdminDetails = "Checked effective OpenSSH configuration using sshd -T."
+	addSSHMetadata(&result, "PermitEmptyPasswords no")
 
 	if value != "no" {
 		result.Title = "PermitEmptyPasswords is enabled"
@@ -258,4 +263,36 @@ func (c checkPermitEmptyPasswords) Run(ctx checks.Context) checks.Result {
 	result.Summary = "SSH accounts with empty passwords are not permitted."
 	result.ClientSummary = "SSH accounts with empty passwords are not permitted."
 	return result
+}
+
+func addSSHMetadata(result *checks.Result, directive string) {
+	key := strings.Fields(directive)
+	regexp := "^#?"
+	if len(key) > 0 {
+		regexp += key[0]
+	} else {
+		regexp += "PermitRootLogin"
+	}
+	result.RemediationSteps = []string{
+		"Edit /etc/ssh/sshd_config or an included sshd_config.d file.",
+		"Set " + directive + ".",
+		"Validate with sshd -t and reload sshd.",
+	}
+	result.References = []string{
+		"https://www.openssh.com/manual.html",
+		"https://man.openbsd.org/sshd_config",
+		"https://www.cisecurity.org/benchmark/debian_linux",
+	}
+	result.Automation = checks.Automation{
+		Shell:   "sudo install -m 0600 -o root -g root /etc/ssh/sshd_config /etc/ssh/sshd_config.bak && sudo sed -i 's/^#\\?" + keyOrDefault(key, "PermitRootLogin") + ".*/" + directive + "/' /etc/ssh/sshd_config && sudo sshd -t && sudo systemctl reload sshd",
+		Ansible: "- name: Harden sshd option\n  ansible.builtin.lineinfile:\n    path: /etc/ssh/sshd_config\n    regexp: '" + regexp + "'\n    line: '" + directive + "'\n  notify: reload sshd",
+		Chef:    "file '/etc/ssh/sshd_config' do\n  action :edit\nend\nservice 'sshd' do\n  action :reload\nend",
+	}
+}
+
+func keyOrDefault(fields []string, fallback string) string {
+	if len(fields) == 0 {
+		return fallback
+	}
+	return fields[0]
 }

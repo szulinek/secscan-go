@@ -106,6 +106,20 @@ func (c checkServerTokens) Run(ctx checks.Context) checks.Result {
 	result.Remediation = result.Recommendation
 	result.ClientSummary = "Nginx may expose version information."
 	result.AdminDetails = "Checked effective nginx configuration using nginx -T."
+	result.RemediationSteps = []string{
+		"Edit nginx.conf or the included server configuration.",
+		"Set server_tokens off in the http context.",
+		"Validate with nginx -t and reload nginx.",
+	}
+	result.References = []string{
+		"https://nginx.org/en/docs/http/ngx_http_core_module.html#server_tokens",
+		"https://www.cisecurity.org/benchmark/nginx",
+	}
+	result.Automation = checks.Automation{
+		Shell:   "sudo sed -i 's/^#\\?\\s*server_tokens.*/server_tokens off;/' /etc/nginx/nginx.conf && sudo nginx -t && sudo systemctl reload nginx",
+		Ansible: "- name: Disable nginx server tokens\n  ansible.builtin.lineinfile:\n    path: /etc/nginx/nginx.conf\n    regexp: '^\\s*#?\\s*server_tokens'\n    line: 'server_tokens off;'\n  notify: reload nginx",
+		Chef:    "template '/etc/nginx/nginx.conf' do\n  notifies :reload, 'service[nginx]'\nend",
+	}
 
 	config, ok := loadConfigForResult(ctx, c.cache, &result, "server_tokens check")
 	if !ok {

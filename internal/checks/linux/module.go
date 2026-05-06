@@ -723,6 +723,21 @@ func (c checkFirewallStatus) Run(ctx checks.Context) checks.Result {
 	result.Recommendation = "Enable and verify a firewall layer such as CSF/LFD, nftables, iptables, or UFW."
 	result.Remediation = result.Recommendation
 	result.ClientSummary = "A host-level firewall was not confirmed."
+	result.RemediationSteps = []string{
+		"Choose one host firewall stack, such as CSF/LFD, nftables, iptables, or UFW.",
+		"Allow required service ports and deny unexpected public access.",
+		"Enable the firewall at boot and verify active rules.",
+	}
+	result.References = []string{
+		"https://www.debian.org/doc/manuals/securing-debian-manual/",
+		"https://wiki.debian.org/nftables",
+		"https://www.cisecurity.org/benchmark/debian_linux",
+	}
+	result.Automation = checks.Automation{
+		Shell:   "sudo systemctl enable --now nftables && sudo nft list ruleset",
+		Ansible: "- name: Ensure nftables is enabled\n  ansible.builtin.service:\n    name: nftables\n    state: started\n    enabled: true",
+		Chef:    "service 'nftables' do\n  action [:enable, :start]\nend",
+	}
 
 	if ctx.Host.GOOS != "linux" && len(ctx.Host.OSRelease) == 0 {
 		result.Status = checks.StatusNotApplicable
