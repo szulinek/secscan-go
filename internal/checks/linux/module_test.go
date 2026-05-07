@@ -40,6 +40,27 @@ func TestIPTablesLooksConfigured(t *testing.T) {
 	}
 }
 
+func TestLinuxParsers(t *testing.T) {
+	ports := parseSSListeningPorts(strings.Join([]string{
+		"Netid State Recv-Q Send-Q Local Address:Port Peer Address:Port Process",
+		`tcp LISTEN 0 128 0.0.0.0:22 0.0.0.0:* users:(("sshd",pid=100,fd=3))`,
+		`tcp LISTEN 0 128 127.0.0.1:3306 0.0.0.0:* users:(("mysqld",pid=102,fd=7))`,
+	}, "\n"))
+	if len(ports) != 1 || ports[0].Port != "22" || ports[0].Process != "sshd" {
+		t.Fatalf("unexpected parsed ports: %#v", ports)
+	}
+
+	packages := securityUpdatePackages("Inst openssl [1] (1 Debian-Security:12/stable-security [amd64])\nInst curl [1] (1 Debian:12/stable [amd64])", 5)
+	if len(packages) != 1 || packages[0] != "openssl" {
+		t.Fatalf("unexpected security update packages: %#v", packages)
+	}
+
+	sudoFindings := riskySudoersLines("/etc/sudoers.d/admins", "ops ALL=(ALL) NOPASSWD: ALL # ticket 123\nadmin ALL=(ALL) ALL\n")
+	if strings.Join(sudoFindings, ";") != "admins:NOPASSWD:ops;admins:ALL=(ALL)ALL:admin" {
+		t.Fatalf("unexpected sudo parser output: %#v", sudoFindings)
+	}
+}
+
 func TestOSVersionCheck(t *testing.T) {
 	result := checkOSVersion{}.Run(checks.Context{
 		Host: system.Info{OSRelease: map[string]string{
@@ -100,7 +121,7 @@ func TestSecurityUpdatesAvailableCheck(t *testing.T) {
 	if result.Status != checks.StatusWarn {
 		t.Fatalf("expected warn status, got %s", result.Status)
 	}
-	if result.Evidence != "security_updates=1" {
+	if result.Evidence != "security_updates=1; packages=openssl" {
 		t.Fatalf("unexpected evidence: %s", result.Evidence)
 	}
 
@@ -112,6 +133,42 @@ func TestSecurityUpdatesAvailableCheck(t *testing.T) {
 	if result.Evidence != "security_updates=0" {
 		t.Fatalf("unexpected pass evidence: %s", result.Evidence)
 	}
+
+	ctx.Host = system.Info{GOOS: "linux", OSRelease: map[string]string{"ID": "alpine"}}
+	result = checkSecurityUpdatesAvailable{}.Run(ctx)
+	if result.Status != checks.StatusNotApplicable {
+		t.Fatalf("expected not_applicable for unsupported distro, got %s", result.Status)
+	}
+}
+
+func TestUnattendedUpgradesCheck(t *testing.T) {
+	paths := withLinuxFixturePaths(t)
+	ctx := checks.Context{
+		Context: context.Background(),
+		Host:    linuxHost(),
+		Runner: mockRunner{outputs: map[string]string{
+			"dpkg-query -W -f=${Status} unattended-upgrades": "install ok installed",
+		}},
+	}
+	writeFixtureFile(t, aptPeriodicPaths[0], 0644, `APT::Periodic::Unattended-Upgrade "1";`)
+
+	result := checkUnattendedUpgrades{}.Run(ctx)
+	if result.Status != checks.StatusPass {
+		t.Fatalf("expected pass status, got %s", result.Status)
+	}
+	assertCompleteResult(t, result)
+	if !strings.Contains(result.Evidence, "package=unattended-upgrades installed") || !strings.Contains(result.Evidence, "apt periodic") {
+		t.Fatalf("unexpected pass evidence: %s", result.Evidence)
+	}
+
+	writeFixtureFile(t, paths.limitsConfPath, 0644, "* hard nproc 4096\n")
+	ctx.Runner = mockRunner{}
+	result = checkUnattendedUpgrades{}.Run(ctx)
+	if result.Status != checks.StatusFail {
+		t.Fatalf("expected fail status when missing, got %s", result.Status)
+	}
+	assertCompleteResult(t, result)
+	assertWarningHasRemediationSteps(t, result)
 }
 
 func TestListeningPortsCheck(t *testing.T) {
@@ -165,7 +222,7 @@ func TestConfigPermissionsCheck(t *testing.T) {
 		t.Fatalf("expected pass status, got %s", result.Status)
 	}
 	assertCompleteResult(t, result)
-	if !strings.Contains(result.Evidence, "passwd=0644") || !strings.Contains(result.Evidence, "sudoers=0440") {
+	if !strings.Contains(result.Evidence, "passwd=mode=0644 owner=") || !strings.Contains(result.Evidence, "sudoers=mode=0440 owner=") {
 		t.Fatalf("unexpected pass evidence: %s", result.Evidence)
 	}
 
@@ -177,7 +234,7 @@ func TestConfigPermissionsCheck(t *testing.T) {
 		t.Fatalf("expected fail status for broad shadow permissions, got %s", result.Status)
 	}
 	assertCompleteResult(t, result)
-	if !strings.Contains(result.Evidence, "shadow=0644>0640") {
+	if !strings.Contains(result.Evidence, "shadow=mode=0644>0640") {
 		t.Fatalf("unexpected fail evidence: %s", result.Evidence)
 	}
 
@@ -217,7 +274,7 @@ func TestSudoersRiskyEntriesCheck(t *testing.T) {
 		t.Fatalf("expected warn status, got %s", result.Status)
 	}
 	assertCompleteResult(t, result)
-	if !strings.Contains(result.Evidence, "admins:NOPASSWD") || !strings.Contains(result.Evidence, "admins:ALL=(ALL)ALL") {
+	if !strings.Contains(result.Evidence, "admins:NOPASSWD:ops") || !strings.Contains(result.Evidence, "admins:ALL=(ALL)ALL:admin") {
 		t.Fatalf("unexpected warn evidence: %s", result.Evidence)
 	}
 
@@ -321,7 +378,7 @@ func TestAuthLogRecentLoginsCheck(t *testing.T) {
 		t.Fatalf("expected info status, got %s", result.Status)
 	}
 	assertCompleteResult(t, result)
-	if result.Evidence != "accepted_count=1; failed_count=1" {
+	if result.Evidence != "accepted_count=1; failed_count=1; invalid_user_count=1; unique_source_ips=2" {
 		t.Fatalf("unexpected info evidence: %s", result.Evidence)
 	}
 
@@ -335,8 +392,22 @@ func TestAuthLogRecentLoginsCheck(t *testing.T) {
 		t.Fatalf("expected warn status, got %s", result.Status)
 	}
 	assertCompleteResult(t, result)
-	if result.Evidence != "accepted_count=0; failed_count=101" {
+	if result.Evidence != "accepted_count=0; failed_count=101; invalid_user_count=101; unique_source_ips=1" {
 		t.Fatalf("unexpected warn evidence: %s", result.Evidence)
+	}
+	assertWarningHasRemediationSteps(t, result)
+
+	invalid := make([]string, 0, 21)
+	for i := 0; i < 21; i++ {
+		invalid = append(invalid, fmt.Sprintf("Apr 20 10:01:00 host sshd[101]: Invalid user test%d from 203.0.113.%d port 45001", i, i))
+	}
+	writeFixtureFile(t, paths.authLogPath, 0644, strings.Join(invalid, "\n"))
+	result = checkAuthLogRecentLogins{}.Run(ctx)
+	if result.Status != checks.StatusWarn {
+		t.Fatalf("expected warn status for invalid user threshold, got %s", result.Status)
+	}
+	if !strings.Contains(result.Evidence, "invalid_user_count=21") || !strings.Contains(result.Evidence, "unique_source_ips=21") {
+		t.Fatalf("unexpected invalid user evidence: %s", result.Evidence)
 	}
 
 	if err := os.Remove(paths.authLogPath); err != nil {
@@ -377,20 +448,30 @@ func TestForkbombLimitsCheck(t *testing.T) {
 	if result.Evidence != "nproc_limits=not_found" {
 		t.Fatalf("unexpected warn evidence: %s", result.Evidence)
 	}
+	assertWarningHasRemediationSteps(t, result)
+
+	writeFixtureFile(t, paths.cgroupPidsPath, 0644, "512\n")
+	result = checkForkbombLimits{}.Run(ctx)
+	if result.Status != checks.StatusPass {
+		t.Fatalf("expected pass status from cgroup pids limit, got %s", result.Status)
+	}
+	if !strings.Contains(result.Evidence, "pids.max=512") {
+		t.Fatalf("unexpected cgroup evidence: %s", result.Evidence)
+	}
 }
 
 func TestProcessSnapshotCheck(t *testing.T) {
 	ctx := checks.Context{
 		Context: context.Background(),
 		Host:    linuxHost(),
-		Runner: mockRunner{outputs: map[string]string{"ps aux": strings.Join([]string{
+		Runner: mockRunner{outputs: map[string]string{"ps auxww": strings.Join([]string{
 			"USER PID %CPU %MEM VSZ RSS TTY STAT START TIME COMMAND",
 			"root 1 0.1 0.2 1000 100 ? Ss Apr20 00:01 /sbin/init",
 			"www-data 200 3.0 4.5 2000 200 ? S Apr20 00:02 php-fpm: pool www",
 		}, "\n")}},
 	}
 
-	result := checkProcessSnapshot{}.Run(ctx)
+	result := checkProcessAnomalies{}.Run(ctx)
 	if result.Status != checks.StatusInfo {
 		t.Fatalf("expected info status, got %s", result.Status)
 	}
@@ -399,12 +480,12 @@ func TestProcessSnapshotCheck(t *testing.T) {
 		t.Fatalf("unexpected info evidence: %s", result.Evidence)
 	}
 
-	ctx.Runner = mockRunner{outputs: map[string]string{"ps aux": strings.Join([]string{
+	ctx.Runner = mockRunner{outputs: map[string]string{"ps auxww": strings.Join([]string{
 		"USER PID %CPU %MEM VSZ RSS TTY STAT START TIME COMMAND",
 		"root 300 0.5 0.1 1000 100 ? S Apr20 00:01 /tmp/.cache/runner",
 		"mysql 400 8.0 20.0 2000 200 ? S Apr20 00:02 /usr/sbin/mysqld",
 	}, "\n")}}
-	result = checkProcessSnapshot{}.Run(ctx)
+	result = checkProcessAnomalies{}.Run(ctx)
 	if result.Status != checks.StatusWarn {
 		t.Fatalf("expected warn status, got %s", result.Status)
 	}
@@ -414,6 +495,19 @@ func TestProcessSnapshotCheck(t *testing.T) {
 	}
 	if !strings.Contains(result.Evidence, "suspicious=root:300") || !strings.Contains(result.Evidence, "/tmp/.cache/runner") {
 		t.Fatalf("unexpected warn evidence: %s", result.Evidence)
+	}
+	assertWarningHasRemediationSteps(t, result)
+
+	ctx.Runner = mockRunner{outputs: map[string]string{"ps auxww": strings.Join([]string{
+		"USER PID %CPU %MEM VSZ RSS TTY STAT START TIME COMMAND",
+		"root 301 0.5 0.1 1000 100 ? S Apr20 00:01 /home/lh/.local/worker",
+	}, "\n")}}
+	result = checkProcessAnomalies{}.Run(ctx)
+	if result.Status != checks.StatusWarn {
+		t.Fatalf("expected warn status for unusual root path, got %s", result.Status)
+	}
+	if !strings.Contains(result.Evidence, "/home/lh/.local/worker") {
+		t.Fatalf("unexpected unusual path evidence: %s", result.Evidence)
 	}
 }
 
@@ -452,7 +546,7 @@ func TestFirewallStatusPassWarnError(t *testing.T) {
 		t.Fatalf("expected warn status, got %s", result.Status)
 	}
 	assertCompleteResult(t, result)
-	if !strings.HasPrefix(result.Evidence, "firewall=not_detected") {
+	if !strings.HasPrefix(result.Evidence, "active_signals=none") {
 		t.Fatalf("unexpected warn evidence: %s", result.Evidence)
 	}
 	if result.Summary != "No active host firewall signal was detected." {
@@ -476,7 +570,7 @@ func TestFirewallStatusPassWarnError(t *testing.T) {
 	if !strings.Contains(result.Evidence, "ufw=probe_error") {
 		t.Fatalf("unexpected error evidence: %s", result.Evidence)
 	}
-	if strings.Contains(result.Evidence, "firewall=not_detected") {
+	if strings.Contains(result.Evidence, "active_signals=none") {
 		t.Fatalf("error evidence should not contain stale warn evidence: %s", result.Evidence)
 	}
 }
@@ -513,6 +607,97 @@ func TestProtectionDaemonPassWarn(t *testing.T) {
 	assertNoFirewallText(t, result)
 }
 
+func TestXTGeoIPModuleCheck(t *testing.T) {
+	paths := withLinuxFixturePaths(t)
+	ctx := checks.Context{
+		Context: context.Background(),
+		Host:    linuxHost(),
+		Runner: mockRunner{outputs: map[string]string{
+			"lsmod":    "xt_geoip 16384 1\n",
+			"uname -r": "6.1.0-test\n",
+		}},
+	}
+
+	result := checkXTGeoIPModule{}.Run(ctx)
+	if result.Status != checks.StatusInfo {
+		t.Fatalf("expected info status when xt_geoip is present, got %s", result.Status)
+	}
+	assertCompleteResult(t, result)
+	if !strings.Contains(result.Evidence, "lsmod=xt_geoip") {
+		t.Fatalf("unexpected geoip evidence: %s", result.Evidence)
+	}
+
+	writeFixtureFile(t, paths.iptablesMatchesPath, 0644, "geoip\n")
+	ctx.Runner = mockRunner{outputs: map[string]string{"lsmod": "", "uname -r": "6.1.0-test\n"}}
+	result = checkXTGeoIPModule{}.Run(ctx)
+	if result.Status != checks.StatusInfo {
+		t.Fatalf("expected info status from ip_tables_matches, got %s", result.Status)
+	}
+	if !strings.Contains(result.Evidence, "ip_tables_matches=geoip") {
+		t.Fatalf("unexpected iptables matches evidence: %s", result.Evidence)
+	}
+
+	if err := os.Remove(paths.iptablesMatchesPath); err != nil {
+		t.Fatalf("remove iptables matches fixture: %v", err)
+	}
+	kernelDir := filepath.Join(paths.libModulesDir, "6.1.0-test", "kernel", "net", "netfilter")
+	if err := os.MkdirAll(kernelDir, 0755); err != nil {
+		t.Fatalf("create kernel module fixture: %v", err)
+	}
+	writeFixtureFile(t, filepath.Join(kernelDir, "xt_geoip.ko"), 0644, "")
+	result = checkXTGeoIPModule{}.Run(ctx)
+	if result.Status != checks.StatusInfo {
+		t.Fatalf("expected info status from module tree, got %s", result.Status)
+	}
+	if !strings.Contains(result.Evidence, "module_tree=") {
+		t.Fatalf("unexpected module tree evidence: %s", result.Evidence)
+	}
+
+	if err := os.Remove(filepath.Join(kernelDir, "xt_geoip.ko")); err != nil {
+		t.Fatalf("remove geoip module fixture: %v", err)
+	}
+	result = checkXTGeoIPModule{}.Run(ctx)
+	if result.Status != checks.StatusNotApplicable {
+		t.Fatalf("expected not_applicable when absent, got %s", result.Status)
+	}
+	if result.Evidence != "xt_geoip=not_detected" {
+		t.Fatalf("unexpected not_applicable evidence: %s", result.Evidence)
+	}
+}
+
+func TestLinuxModuleContainsAllBaselineChecks(t *testing.T) {
+	ids := map[string]struct{}{}
+	for _, check := range NewModule().Checks() {
+		ids[check.ID()] = struct{}{}
+	}
+
+	expected := []string{
+		"linux.os_version",
+		"linux.kernel_version",
+		"linux.unattended_upgrades",
+		"linux.security_updates_available",
+		"linux.firewall_status",
+		"linux.listening_ports",
+		"linux.unknown_users",
+		"linux.config_permissions",
+		"linux.process_anomalies",
+		"linux.sudoers_risky_entries",
+		"linux.forkbomb_limits",
+		"linux.xt_geoip_module",
+		"linux.apparmor_status",
+		"linux.protection_daemon",
+		"linux.auth_log_recent_logins",
+	}
+	for _, id := range expected {
+		if _, ok := ids[id]; !ok {
+			t.Fatalf("missing Linux baseline check %s", id)
+		}
+	}
+	if len(ids) != len(expected) {
+		t.Fatalf("expected %d Linux checks, got %d: %#v", len(expected), len(ids), ids)
+	}
+}
+
 func TestLinuxChecksDoNotLeaveDuplicateOrStaleMessages(t *testing.T) {
 	withLinuxFixturePaths(t)
 	ctx := checks.Context{
@@ -525,7 +710,7 @@ func TestLinuxChecksDoNotLeaveDuplicateOrStaleMessages(t *testing.T) {
 			"systemctl is-enabled unattended-upgrades.service": "enabled\n",
 			"ss -tulpn":        `tcp LISTEN 0 128 0.0.0.0:22 0.0.0.0:* users:(("sshd",pid=100,fd=3))`,
 			"aa-status":        "apparmor module is loaded.\n12 profiles are loaded.\n",
-			"ps aux":           "USER PID %CPU %MEM VSZ RSS TTY STAT START TIME COMMAND\nroot 1 0.1 0.2 1000 100 ? Ss Apr20 00:01 /sbin/init\n",
+			"ps auxww":         "USER PID %CPU %MEM VSZ RSS TTY STAT START TIME COMMAND\nroot 1 0.1 0.2 1000 100 ? Ss Apr20 00:01 /sbin/init\n",
 			"ufw status":       "Status: inactive\n",
 			"nft list ruleset": "",
 			"iptables -S":      "-P INPUT ACCEPT\n-P FORWARD ACCEPT\n-P OUTPUT ACCEPT\n",
@@ -546,7 +731,8 @@ func TestLinuxChecksDoNotLeaveDuplicateOrStaleMessages(t *testing.T) {
 		checkAppArmorStatus{},
 		checkAuthLogRecentLogins{},
 		checkForkbombLimits{},
-		checkProcessSnapshot{},
+		checkProcessAnomalies{},
+		checkXTGeoIPModule{},
 	} {
 		result := check.Run(ctx)
 		assertCompleteResult(t, result)
@@ -557,13 +743,16 @@ func TestLinuxChecksDoNotLeaveDuplicateOrStaleMessages(t *testing.T) {
 }
 
 type fixturePaths struct {
-	passwdPath         string
-	sudoersPath        string
-	sudoersDropInDir   string
-	authLogPath        string
-	authLogRotatedPath string
-	limitsConfPath     string
-	limitsDropInDir    string
+	passwdPath          string
+	sudoersPath         string
+	sudoersDropInDir    string
+	authLogPath         string
+	authLogRotatedPath  string
+	limitsConfPath      string
+	limitsDropInDir     string
+	cgroupPidsPath      string
+	iptablesMatchesPath string
+	libModulesDir       string
 }
 
 func withLinuxFixturePaths(t *testing.T) fixturePaths {
@@ -573,6 +762,8 @@ func withLinuxFixturePaths(t *testing.T) fixturePaths {
 	sshDir := filepath.Join(dir, "ssh")
 	sudoersDir := filepath.Join(dir, "sudoers.d")
 	limitsDir := filepath.Join(dir, "limits.d")
+	cgroupDir := filepath.Join(dir, "cgroup")
+	modulesDir := filepath.Join(dir, "modules")
 	if err := os.MkdirAll(sshDir, 0700); err != nil {
 		t.Fatalf("create ssh fixture dir: %v", err)
 	}
@@ -582,15 +773,24 @@ func withLinuxFixturePaths(t *testing.T) fixturePaths {
 	if err := os.MkdirAll(limitsDir, 0700); err != nil {
 		t.Fatalf("create limits fixture dir: %v", err)
 	}
+	if err := os.MkdirAll(cgroupDir, 0700); err != nil {
+		t.Fatalf("create cgroup fixture dir: %v", err)
+	}
+	if err := os.MkdirAll(modulesDir, 0700); err != nil {
+		t.Fatalf("create modules fixture dir: %v", err)
+	}
 
 	paths := fixturePaths{
-		passwdPath:         filepath.Join(dir, "passwd"),
-		sudoersPath:        filepath.Join(dir, "sudoers"),
-		sudoersDropInDir:   sudoersDir,
-		authLogPath:        filepath.Join(dir, "auth.log"),
-		authLogRotatedPath: filepath.Join(dir, "auth.log.1"),
-		limitsConfPath:     filepath.Join(dir, "limits.conf"),
-		limitsDropInDir:    limitsDir,
+		passwdPath:          filepath.Join(dir, "passwd"),
+		sudoersPath:         filepath.Join(dir, "sudoers"),
+		sudoersDropInDir:    sudoersDir,
+		authLogPath:         filepath.Join(dir, "auth.log"),
+		authLogRotatedPath:  filepath.Join(dir, "auth.log.1"),
+		limitsConfPath:      filepath.Join(dir, "limits.conf"),
+		limitsDropInDir:     limitsDir,
+		cgroupPidsPath:      filepath.Join(cgroupDir, "pids.max"),
+		iptablesMatchesPath: filepath.Join(dir, "ip_tables_matches"),
+		libModulesDir:       modulesDir,
 	}
 	targets := []configPermissionTarget{
 		{Key: "passwd", Path: paths.passwdPath, MaxMode: 0644},
@@ -613,6 +813,10 @@ func withLinuxFixturePaths(t *testing.T) fixturePaths {
 	originalAuthLogPaths := authLogPaths
 	originalLimitsConfPath := limitsConfPath
 	originalLimitsDropInPath := limitsDropInPath
+	originalAptPeriodicPaths := aptPeriodicPaths
+	originalCgroupPidsPaths := cgroupPidsPaths
+	originalIPTablesMatchesPath := ipTablesMatchesPath
+	originalLibModulesPath := libModulesPath
 	originalNowFunc := nowFunc
 	configPermissionTargets = targets
 	sudoersPath = paths.sudoersPath
@@ -621,6 +825,10 @@ func withLinuxFixturePaths(t *testing.T) fixturePaths {
 	authLogPaths = []string{paths.authLogPath, paths.authLogRotatedPath}
 	limitsConfPath = paths.limitsConfPath
 	limitsDropInPath = paths.limitsDropInDir
+	aptPeriodicPaths = []string{filepath.Join(dir, "20auto-upgrades"), filepath.Join(dir, "50unattended-upgrades")}
+	cgroupPidsPaths = []string{paths.cgroupPidsPath}
+	ipTablesMatchesPath = paths.iptablesMatchesPath
+	libModulesPath = paths.libModulesDir
 	nowFunc = func() time.Time {
 		return time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC)
 	}
@@ -632,6 +840,10 @@ func withLinuxFixturePaths(t *testing.T) fixturePaths {
 		authLogPaths = originalAuthLogPaths
 		limitsConfPath = originalLimitsConfPath
 		limitsDropInPath = originalLimitsDropInPath
+		aptPeriodicPaths = originalAptPeriodicPaths
+		cgroupPidsPaths = originalCgroupPidsPaths
+		ipTablesMatchesPath = originalIPTablesMatchesPath
+		libModulesPath = originalLibModulesPath
 		nowFunc = originalNowFunc
 	})
 
@@ -715,5 +927,15 @@ func assertNoFirewallText(t *testing.T, result checks.Result) {
 	}, " "))
 	if strings.Contains(combined, "firewall") {
 		t.Fatalf("%s should not mention firewall: %s", result.ID, combined)
+	}
+}
+
+func assertWarningHasRemediationSteps(t *testing.T, result checks.Result) {
+	t.Helper()
+	if result.Status != checks.StatusWarn && result.Status != checks.StatusFail {
+		t.Fatalf("%s is not a risk result: %s", result.ID, result.Status)
+	}
+	if len(result.RemediationSteps) == 0 {
+		t.Fatalf("%s should include remediation steps for risk status", result.ID)
 	}
 }

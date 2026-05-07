@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"secscan/internal/checks"
@@ -34,13 +35,17 @@ var configPermissionTargets = []configPermissionTarget{
 }
 
 var (
-	sudoersPath       = "/etc/sudoers"
-	sudoersDropInPath = "/etc/sudoers.d"
-	passwdPath        = "/etc/passwd"
-	authLogPaths      = []string{"/var/log/auth.log", "/var/log/auth.log.1"}
-	limitsConfPath    = "/etc/security/limits.conf"
-	limitsDropInPath  = "/etc/security/limits.d"
-	nowFunc           = time.Now
+	sudoersPath         = "/etc/sudoers"
+	sudoersDropInPath   = "/etc/sudoers.d"
+	passwdPath          = "/etc/passwd"
+	authLogPaths        = []string{"/var/log/auth.log", "/var/log/auth.log.1"}
+	limitsConfPath      = "/etc/security/limits.conf"
+	limitsDropInPath    = "/etc/security/limits.d"
+	aptPeriodicPaths    = []string{"/etc/apt/apt.conf.d/20auto-upgrades", "/etc/apt/apt.conf.d/50unattended-upgrades"}
+	cgroupPidsPaths     = []string{"/sys/fs/cgroup/pids.max"}
+	ipTablesMatchesPath = "/proc/net/ip_tables_matches"
+	libModulesPath      = "/lib/modules"
+	nowFunc             = time.Now
 )
 
 type Module struct{}
@@ -76,7 +81,8 @@ func (m Module) Checks() []checks.Check {
 		checkAppArmorStatus{},
 		checkAuthLogRecentLogins{},
 		checkForkbombLimits{},
-		checkProcessSnapshot{},
+		checkProcessAnomalies{},
+		checkXTGeoIPModule{},
 	}
 }
 
@@ -167,6 +173,15 @@ func (c checkSecurityUpdatesAvailable) Run(ctx checks.Context) checks.Result {
 	result.Impact = "Uninstalled security updates leave known vulnerabilities exposed."
 	result.Recommendation = "Apply available security updates during the next safe maintenance window."
 	result.Remediation = result.Recommendation
+	result.RemediationSteps = []string{
+		"Review pending security updates from apt dry-run output.",
+		"Schedule a maintenance window for package upgrades.",
+		"Reboot if kernel or core library updates require it.",
+	}
+	result.Automation = checks.Automation{
+		Shell:   "sudo apt-get update && sudo apt-get upgrade",
+		Ansible: "- name: Apply security updates\n  ansible.builtin.apt:\n    upgrade: safe\n    update_cache: true",
+	}
 	result.ClientSummary = "No pending security updates were detected."
 	result.AdminDetails = "Simulated package upgrade with apt-get -s and counted security repository upgrades."
 
@@ -192,8 +207,9 @@ func (c checkSecurityUpdatesAvailable) Run(ctx checks.Context) checks.Result {
 		return result
 	}
 
+	packages := securityUpdatePackages(string(output), 5)
 	count := countSecurityUpdates(string(output))
-	result.Evidence = "security_updates=" + strconv.Itoa(count)
+	result.Evidence = securityUpdatesEvidence(count, packages)
 	if count > 0 {
 		result.Title = "Security updates are available"
 		result.Status = checks.StatusWarn
@@ -223,6 +239,15 @@ func (c checkUnattendedUpgrades) Run(ctx checks.Context) checks.Result {
 	result.Impact = "Missing automatic security updates increases exposure to known vulnerabilities between maintenance windows."
 	result.Recommendation = "Install and enable unattended-upgrades or document an equivalent patch-management process."
 	result.Remediation = result.Recommendation
+	result.RemediationSteps = []string{
+		"Install unattended-upgrades on Debian or Ubuntu systems.",
+		"Enable unattended security upgrades through apt periodic config or systemd timers.",
+		"Verify update logs after the next scheduled run.",
+	}
+	result.Automation = checks.Automation{
+		Shell:   "sudo apt-get install unattended-upgrades && sudo dpkg-reconfigure unattended-upgrades",
+		Ansible: "- name: Install unattended-upgrades\n  ansible.builtin.apt:\n    name: unattended-upgrades\n    state: present",
+	}
 	result.ClientSummary = "Automatic security updates are not confirmed on this server."
 
 	if !isDebianLike(ctx.Host) {
@@ -267,6 +292,11 @@ func (c checkListeningPorts) Run(ctx checks.Context) checks.Result {
 	result.Impact = "Unexpected public listening ports increase the externally reachable attack surface."
 	result.Recommendation = "Close unnecessary public listeners or document and firewall them explicitly."
 	result.Remediation = result.Recommendation
+	result.RemediationSteps = []string{
+		"Confirm whether each unexpected listener is required.",
+		"Bind internal services to localhost where possible.",
+		"Restrict required public listeners with firewall rules.",
+	}
 	result.ClientSummary = "Public listening ports were collected for inventory."
 	result.AdminDetails = "Collected listening TCP/UDP sockets with ss -tulpn and filtered wildcard bind addresses."
 	result.HiddenInClientReport = true
@@ -304,13 +334,13 @@ func (c checkListeningPorts) Run(ctx checks.Context) checks.Result {
 		result.Severity = checks.SeverityMedium
 		result.Summary = fmt.Sprintf("%d public listening port(s) are outside the allowlist.", len(unexpected))
 		result.ClientSummary = "Unexpected public listening ports are exposed."
-		result.Evidence = listeningPortsEvidence(unexpected)
+		result.Evidence = listeningPortsEvidence(unexpected, 15)
 		result.HiddenInClientReport = false
 		return result
 	}
 
 	result.Summary = "Wildcard listening ports are limited to allowed services."
-	result.Evidence = listeningPortsEvidence(ports)
+	result.Evidence = listeningPortsEvidence(ports, 15)
 	return result
 }
 
@@ -330,6 +360,11 @@ func (c checkConfigPermissions) Run(ctx checks.Context) checks.Result {
 	result.Impact = "Overly broad permissions on sensitive config files can expose credentials or allow unsafe configuration changes."
 	result.Recommendation = "Restrict sensitive files to distribution-safe ownership and mode defaults."
 	result.Remediation = result.Recommendation
+	result.RemediationSteps = []string{
+		"Review ownership and mode of sensitive configuration files.",
+		"Restore distribution defaults for files with broad permissions.",
+		"Re-run the audit after permission changes.",
+	}
 	result.ClientSummary = "Sensitive system config file permissions appear safe."
 	result.AdminDetails = "Checked /etc/passwd, /etc/shadow, /etc/sudoers, and /etc/ssh/sshd_config mode bits."
 
@@ -388,6 +423,11 @@ func (c checkSudoersRiskyEntries) Run(ctx checks.Context) checks.Result {
 	result.Impact = "Risky sudoers entries can allow broad privilege escalation or passwordless administrative actions."
 	result.Recommendation = "Limit sudo rules to specific users, commands, and operational needs; avoid broad NOPASSWD rules."
 	result.Remediation = result.Recommendation
+	result.RemediationSteps = []string{
+		"Review sudoers entries flagged by file and rule type.",
+		"Replace broad NOPASSWD or ALL command grants with scoped commands.",
+		"Validate changes with visudo before deployment.",
+	}
 	result.ClientSummary = "No risky sudoers rules were detected."
 	result.AdminDetails = "Parsed /etc/sudoers and regular files in /etc/sudoers.d for NOPASSWD and ALL=(ALL) ALL entries."
 
@@ -442,6 +482,11 @@ func (c checkUnknownUsers) Run(ctx checks.Context) checks.Result {
 	result.Impact = "Unexpected interactive users can indicate unmanaged access or stale accounts."
 	result.Recommendation = "Review interactive users and remove or document accounts that are no longer needed."
 	result.Remediation = result.Recommendation
+	result.RemediationSteps = []string{
+		"Confirm every interactive account has an owner and business purpose.",
+		"Disable or remove stale accounts.",
+		"Move expected accounts into the documented allowlist.",
+	}
 	result.ClientSummary = "Interactive system users were reviewed."
 	result.AdminDetails = "Parsed passwd entries with UID >= 1000 and shells other than nologin or false."
 	result.HiddenInClientReport = true
@@ -497,8 +542,13 @@ func (c checkAppArmorStatus) Run(ctx checks.Context) checks.Result {
 	result.Impact = "Mandatory access controls reduce the impact of compromised services."
 	result.Recommendation = "Enable AppArmor and keep service profiles loaded where supported."
 	result.Remediation = result.Recommendation
+	result.RemediationSteps = []string{
+		"Install AppArmor packages where supported by the distribution.",
+		"Enable and start the apparmor service.",
+		"Review profile enforcement status after enabling.",
+	}
 	result.ClientSummary = "AppArmor appears to be active."
-	result.AdminDetails = "Checked aa-status first, then systemctl status apparmor."
+	result.AdminDetails = "Checked aa-status first, then systemctl is-active apparmor."
 
 	if !isLinuxHost(ctx.Host) {
 		result.Status = checks.StatusNotApplicable
@@ -547,6 +597,11 @@ func (c checkAuthLogRecentLogins) Run(ctx checks.Context) checks.Result {
 	result.Impact = "A high number of failed SSH logins can indicate password guessing or exposure to automated attacks."
 	result.Recommendation = "Review SSH exposure, enforce key-based access, and keep brute-force protection enabled."
 	result.Remediation = result.Recommendation
+	result.RemediationSteps = []string{
+		"Review SSH exposure and source IP patterns.",
+		"Enforce key-based authentication and disable password login where possible.",
+		"Enable fail2ban or CrowdSec for repeated failures.",
+	}
 	result.ClientSummary = "Recent SSH login activity was reviewed."
 	result.AdminDetails = "Parsed auth.log and auth.log.1 for accepted and failed SSH logins from the last 60 days."
 	result.HiddenInClientReport = true
@@ -575,13 +630,13 @@ func (c checkAuthLogRecentLogins) Run(ctx checks.Context) checks.Result {
 		return result
 	}
 
-	result.Evidence = fmt.Sprintf("accepted_count=%d; failed_count=%d", counts.Accepted, counts.Failed)
-	if counts.Failed > 100 {
+	result.Evidence = authLogEvidence(counts)
+	if counts.Failed > 100 || counts.InvalidUsers > 20 {
 		result.Title = "High number of failed SSH logins"
 		result.Status = checks.StatusWarn
 		result.Severity = checks.SeverityMedium
 		result.Summary = "A high number of failed SSH logins was detected in recent auth logs."
-		result.ClientSummary = "SSH is seeing many failed login attempts."
+		result.ClientSummary = "SSH is seeing many failed or invalid login attempts."
 		result.HiddenInClientReport = false
 		return result
 	}
@@ -606,8 +661,13 @@ func (c checkForkbombLimits) Run(ctx checks.Context) checks.Result {
 	result.Impact = "Missing nproc limits can make process exhaustion easier during abuse or application failure."
 	result.Recommendation = "Define sane nproc limits in limits.conf or limits.d for interactive and service users."
 	result.Remediation = result.Recommendation
+	result.RemediationSteps = []string{
+		"Define nproc limits for users or groups in limits.conf or limits.d.",
+		"Confirm services also have process limits through systemd or cgroups where needed.",
+		"Validate that normal application workloads still have enough headroom.",
+	}
 	result.ClientSummary = "Process count limits appear to be configured."
-	result.AdminDetails = "Checked /etc/security/limits.conf and regular files in /etc/security/limits.d for nproc entries."
+	result.AdminDetails = "Checked /etc/security/limits.conf, regular files in /etc/security/limits.d, and read-only cgroup pids limits."
 
 	if !isLinuxHost(ctx.Host) {
 		result.Status = checks.StatusNotApplicable
@@ -618,7 +678,7 @@ func (c checkForkbombLimits) Run(ctx checks.Context) checks.Result {
 		return result
 	}
 
-	entries, readErrors := nprocLimitEntries()
+	entries, readErrors := processLimitEntries()
 	if len(readErrors) > 0 {
 		result.Status = checks.StatusError
 		result.Summary = "Process limit files could not be checked."
@@ -639,45 +699,50 @@ func (c checkForkbombLimits) Run(ctx checks.Context) checks.Result {
 		return result
 	}
 
-	result.Summary = "nproc limits were found in limits configuration."
+	result.Summary = "Process count limits were found."
 	result.Evidence = strings.Join(entries, "; ")
 	return result
 }
 
-type checkProcessSnapshot struct{}
+type checkProcessAnomalies struct{}
 
-func (c checkProcessSnapshot) ID() string {
-	return "linux.process_snapshot"
+func (c checkProcessAnomalies) ID() string {
+	return "linux.process_anomalies"
 }
 
-func (c checkProcessSnapshot) Title() string {
-	return "Process snapshot reviewed"
+func (c checkProcessAnomalies) Title() string {
+	return "Process anomalies"
 }
 
-func (c checkProcessSnapshot) Run(ctx checks.Context) checks.Result {
+func (c checkProcessAnomalies) Run(ctx checks.Context) checks.Result {
 	result := checks.NewResult(c.ID(), moduleID, service, c.Title(), checks.SeverityInfo, checks.StatusInfo)
 	result.Category = checks.CategorySystem
 	result.Impact = "Suspicious root-owned processes can indicate compromise or unsafe temporary execution."
 	result.Recommendation = "Review unusual root-owned processes and verify their executable path and owner."
 	result.Remediation = result.Recommendation
-	result.ClientSummary = "A process snapshot was collected for administrator review."
-	result.AdminDetails = "Collected ps aux output, summarized top CPU/MEM processes, and flagged root processes from temporary paths or deleted binaries."
+	result.RemediationSteps = []string{
+		"Verify the executable path and owner for each suspicious process.",
+		"Stop unknown temporary-path processes only after preserving evidence.",
+		"Investigate persistence mechanisms before rebooting the host.",
+	}
+	result.ClientSummary = "Running processes were reviewed for obvious anomalies."
+	result.AdminDetails = "Collected ps auxww output, summarized top CPU/MEM processes, and flagged root processes from temporary paths, unusual paths, or deleted binaries."
 	result.HiddenInClientReport = true
 
 	if !isLinuxHost(ctx.Host) {
 		result.Status = checks.StatusNotApplicable
-		result.Summary = "Process snapshot check applies to Linux systems only."
+		result.Summary = "Process anomaly check applies to Linux systems only."
 		result.Evidence = "goos=" + ctx.Host.GOOS
 		return result
 	}
 
-	output, err := ctx.Runner.Run(ctx.Context, "ps", "aux")
+	output, err := ctx.Runner.Run(ctx.Context, "ps", "auxww")
 	if err != nil {
 		result.Status = checks.StatusError
-		result.Summary = "Process snapshot could not be collected."
+		result.Summary = "Process anomaly data could not be collected."
 		result.ClientSummary = "Running processes could not be verified."
 		result.Evidence = "ps_aux=failed"
-		result.AdminDetails = "Command failed: ps aux\n" + err.Error()
+		result.AdminDetails = "Command failed: ps auxww\n" + err.Error()
 		result.Error = err.Error()
 		return result
 	}
@@ -696,7 +761,7 @@ func (c checkProcessSnapshot) Run(ctx checks.Context) checks.Result {
 		result.Severity = checks.SeverityMedium
 		result.Summary = "A root-owned process with an unusual executable path was detected."
 		result.ClientSummary = "One root-owned process needs administrator review."
-		result.Evidence = "suspicious=" + processEvidence(suspicious, 3) + "; top=" + processEvidence(topProcesses(processes, 3), 3)
+		result.Evidence = "suspicious=" + processEvidence(suspicious, 10) + "; top=" + processEvidence(topProcesses(processes, 3), 3)
 		result.HiddenInClientReport = false
 		return result
 	}
@@ -756,7 +821,10 @@ func (c checkFirewallStatus) Run(ctx checks.Context) checks.Result {
 		result.Status = checks.StatusPass
 		result.Summary = "An active host firewall signal was detected."
 		result.ClientSummary = "A host-level firewall appears to be active."
-		result.Evidence = strings.Join(status.ActiveSignals, "; ")
+		result.Evidence = strings.Join(compact([]string{
+			"active_signals=" + strings.Join(status.ActiveSignals, ","),
+			installedSignalsEvidence(status.InstalledSignals),
+		}), "; ")
 		return result
 	}
 
@@ -771,11 +839,7 @@ func (c checkFirewallStatus) Run(ctx checks.Context) checks.Result {
 		return result
 	}
 
-	evidence := "firewall=not_detected"
-	if len(status.InstalledSignals) > 0 {
-		evidence += "; " + strings.Join(status.InstalledSignals, "; ")
-	}
-	result.Evidence = evidence
+	result.Evidence = strings.Join(compact([]string{"active_signals=none", installedSignalsEvidence(status.InstalledSignals)}), "; ")
 	result.Summary = "No active host firewall signal was detected."
 	return result
 }
@@ -796,6 +860,15 @@ func (c checkProtectionDaemon) Run(ctx checks.Context) checks.Result {
 	result.Impact = "Without fail2ban or CrowdSec, repeated authentication attacks may not be throttled automatically."
 	result.Recommendation = "Enable fail2ban or CrowdSec for exposed SSH, mail, FTP, and web authentication endpoints."
 	result.Remediation = result.Recommendation
+	result.RemediationSteps = []string{
+		"Install fail2ban or CrowdSec.",
+		"Enable protections for SSH and other exposed authentication services.",
+		"Monitor ban decisions after enabling the daemon.",
+	}
+	result.Automation = checks.Automation{
+		Shell:   "sudo apt-get install fail2ban && sudo systemctl enable --now fail2ban",
+		Ansible: "- name: Ensure fail2ban is running\n  ansible.builtin.service:\n    name: fail2ban\n    state: started\n    enabled: true",
+	}
 	result.ClientSummary = "No brute-force protection daemon was confirmed."
 	result.AdminDetails = "Checked running systemd units for fail2ban.service and crowdsec.service."
 
@@ -819,6 +892,47 @@ func (c checkProtectionDaemon) Run(ctx checks.Context) checks.Result {
 
 	result.Summary = "No fail2ban or CrowdSec service was detected as running."
 	result.Evidence = "protection_daemon=not_detected"
+	return result
+}
+
+type checkXTGeoIPModule struct{}
+
+func (c checkXTGeoIPModule) ID() string {
+	return "linux.xt_geoip_module"
+}
+
+func (c checkXTGeoIPModule) Title() string {
+	return "xt_geoip module availability"
+}
+
+func (c checkXTGeoIPModule) Run(ctx checks.Context) checks.Result {
+	result := checks.NewResult(c.ID(), moduleID, service, c.Title(), checks.SeverityInfo, checks.StatusNotApplicable)
+	result.Category = checks.CategoryFirewall
+	result.Impact = "GeoIP match support can help administrators build region-based firewall rules when that control is part of policy."
+	result.Recommendation = "Treat GeoIP support as optional; enable it only when firewall policy requires geographic matching."
+	result.Remediation = result.Recommendation
+	result.Summary = "xt_geoip or geoip match support was not detected."
+	result.ClientSummary = "Optional GeoIP firewall matching was not detected."
+	result.AdminDetails = "Checked lsmod, ip_tables_matches, and the current kernel module tree for xt_geoip or geoip support."
+	result.Evidence = "xt_geoip=not_detected"
+	result.HiddenInClientReport = true
+
+	if !isLinuxHost(ctx.Host) {
+		result.Status = checks.StatusNotApplicable
+		result.Summary = "xt_geoip check applies to Linux systems only."
+		result.Evidence = "goos=" + ctx.Host.GOOS
+		return result
+	}
+
+	signals := detectXTGeoIP(ctx)
+	if len(signals) == 0 {
+		return result
+	}
+
+	result.Status = checks.StatusInfo
+	result.Summary = "xt_geoip or geoip match support was detected."
+	result.ClientSummary = "Optional GeoIP firewall matching appears to be available."
+	result.Evidence = strings.Join(signals, "; ")
 	return result
 }
 
@@ -871,6 +985,11 @@ func valueOrUnknown(value string) string {
 }
 
 func countSecurityUpdates(output string) int {
+	return len(securityUpdatePackages(output, 0))
+}
+
+func securityUpdatePackages(output string, limit int) []string {
+	packages := []string{}
 	count := 0
 	for _, line := range strings.Split(output, "\n") {
 		line = strings.TrimSpace(line)
@@ -879,10 +998,26 @@ func countSecurityUpdates(output string) int {
 			continue
 		}
 		if strings.Contains(lower, "security") || strings.Contains(lower, "-security") {
+			fields := strings.Fields(line)
+			if len(fields) > 1 {
+				packages = append(packages, fields[1])
+			} else {
+				packages = append(packages, "unknown")
+			}
 			count++
+			if limit > 0 && count >= limit {
+				break
+			}
 		}
 	}
-	return count
+	return packages
+}
+
+func securityUpdatesEvidence(count int, packages []string) string {
+	if len(packages) == 0 {
+		return "security_updates=" + strconv.Itoa(count)
+	}
+	return "security_updates=" + strconv.Itoa(count) + "; packages=" + strings.Join(packages, ",")
 }
 
 type listeningPort struct {
@@ -988,8 +1123,11 @@ var allowedPublicPorts = map[string]struct{}{
 	"40022": {},
 }
 
-func listeningPortsEvidence(ports []listeningPort) string {
+func listeningPortsEvidence(ports []listeningPort, limit int) string {
 	values := []string{}
+	if limit > 0 && len(ports) > limit {
+		ports = ports[:limit]
+	}
 	for _, port := range ports {
 		values = append(values, strings.Join([]string{port.Proto, port.Address, port.Port, port.Process}, "/"))
 	}
@@ -1013,12 +1151,13 @@ func inspectConfigPermissions(targets []configPermissionTarget) configPermission
 		}
 
 		mode := info.Mode().Perm()
-		status.Evidence = append(status.Evidence, target.Key+"="+modeString(mode))
+		owner, group := fileOwnerGroup(info)
+		status.Evidence = append(status.Evidence, fmt.Sprintf("%s=mode=%s owner=%s group=%s", target.Key, modeString(mode), owner, group))
 		if mode&^target.MaxMode == 0 {
 			continue
 		}
 
-		status.Issues = append(status.Issues, target.Key+"="+modeString(mode)+">"+modeString(target.MaxMode))
+		status.Issues = append(status.Issues, fmt.Sprintf("%s=mode=%s>%s owner=%s group=%s", target.Key, modeString(mode), modeString(target.MaxMode), owner, group))
 		if target.Critical || mode&0002 != 0 {
 			status.HasCritical = true
 		}
@@ -1029,6 +1168,14 @@ func inspectConfigPermissions(targets []configPermissionTarget) configPermission
 
 func modeString(mode fs.FileMode) string {
 	return fmt.Sprintf("%04o", mode.Perm())
+}
+
+func fileOwnerGroup(info fs.FileInfo) (string, string) {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return "unknown", "unknown"
+	}
+	return strconv.FormatUint(uint64(stat.Uid), 10), strconv.FormatUint(uint64(stat.Gid), 10)
 }
 
 func riskySudoersEntries() ([]string, []string) {
@@ -1088,14 +1235,27 @@ func riskySudoersLines(path, content string) []string {
 
 		upper := strings.ToUpper(line)
 		name := sudoersEvidenceName(path)
+		principal := sudoersPrincipal(line)
 		if strings.Contains(upper, "NOPASSWD") {
-			findings = append(findings, name+":NOPASSWD")
+			findings = append(findings, name+":NOPASSWD:"+principal)
 		}
 		if strings.Contains(strings.Join(strings.Fields(upper), ""), "ALL=(ALL)ALL") {
-			findings = append(findings, name+":ALL=(ALL)ALL")
+			findings = append(findings, name+":ALL=(ALL)ALL:"+principal)
 		}
 	}
 	return findings
+}
+
+func sudoersPrincipal(line string) string {
+	fields := strings.Fields(line)
+	if len(fields) == 0 {
+		return "unknown"
+	}
+	principal := fields[0]
+	if len(principal) > 48 {
+		return principal[:48]
+	}
+	return principal
 }
 
 func stripSudoersComment(line string) string {
@@ -1127,10 +1287,11 @@ type passwdUser struct {
 }
 
 var knownInteractiveUsers = map[string]struct{}{
-	"root":   {},
-	"lh":     {},
-	"admin":  {},
-	"deploy": {},
+	"root":    {},
+	"lh":      {},
+	"admin":   {},
+	"deploy":  {},
+	"ansible": {},
 }
 
 func interactivePasswdUsers(path string) ([]passwdUser, error) {
@@ -1197,6 +1358,9 @@ func passwdUsersEvidence(users []passwdUser) string {
 	}
 
 	values := []string{}
+	if len(users) > 20 {
+		users = users[:20]
+	}
 	for _, user := range users {
 		values = append(values, fmt.Sprintf("%s:%d:%s", user.Name, user.UID, user.Shell))
 	}
@@ -1220,7 +1384,7 @@ func detectAppArmorStatus(ctx checks.Context) appArmorStatus {
 		}
 	}
 
-	output, err = ctx.Runner.Run(ctx.Context, "systemctl", "status", "apparmor")
+	output, err = ctx.Runner.Run(ctx.Context, "systemctl", "is-active", "apparmor")
 	if err == nil {
 		return appArmorStatusFromOutput("apparmor", string(output))
 	}
@@ -1241,12 +1405,15 @@ func appArmorStatusFromOutput(source, output string) appArmorStatus {
 	switch {
 	case strings.Contains(lower, "apparmor module is loaded") ||
 		strings.Contains(lower, "profiles are loaded") ||
-		strings.Contains(lower, "active: active"):
+		strings.Contains(lower, "active: active") ||
+		strings.TrimSpace(lower) == "active":
 		return appArmorStatus{State: "active", Evidence: source + "=active"}
 	case strings.Contains(lower, "apparmor module is not loaded") ||
 		strings.Contains(lower, "not loaded") ||
 		strings.Contains(lower, "active: inactive") ||
-		strings.Contains(lower, "active: failed"):
+		strings.Contains(lower, "active: failed") ||
+		strings.TrimSpace(lower) == "inactive" ||
+		strings.TrimSpace(lower) == "failed":
 		return appArmorStatus{State: "inactive", Evidence: source + "=inactive"}
 	case strings.Contains(lower, "not-found") ||
 		strings.Contains(lower, "could not be found") ||
@@ -1258,13 +1425,15 @@ func appArmorStatusFromOutput(source, output string) appArmorStatus {
 }
 
 type authLogCounts struct {
-	FoundLog bool
-	Accepted int
-	Failed   int
+	FoundLog     bool
+	Accepted     int
+	Failed       int
+	InvalidUsers int
+	SourceIPs    map[string]struct{}
 }
 
 func recentSSHLoginCounts(paths []string, now time.Time) (authLogCounts, error) {
-	counts := authLogCounts{}
+	counts := authLogCounts{SourceIPs: map[string]struct{}{}}
 	for _, path := range paths {
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -1292,9 +1461,15 @@ func addAuthLogCounts(counts *authLogCounts, content string, now time.Time) {
 		}
 
 		lower := strings.ToLower(line)
+		if ip := authLogSourceIP(line); ip != "" {
+			counts.SourceIPs[ip] = struct{}{}
+		}
 		if strings.Contains(lower, "accepted ") {
 			counts.Accepted++
 			continue
+		}
+		if strings.Contains(lower, "invalid user") {
+			counts.InvalidUsers++
 		}
 		if strings.Contains(lower, "failed password") ||
 			strings.Contains(lower, "failed publickey") ||
@@ -1303,6 +1478,31 @@ func addAuthLogCounts(counts *authLogCounts, content string, now time.Time) {
 			counts.Failed++
 		}
 	}
+}
+
+func authLogSourceIP(line string) string {
+	fields := strings.Fields(line)
+	for i, field := range fields {
+		if field != "from" || i+1 >= len(fields) {
+			continue
+		}
+		candidate := strings.Trim(fields[i+1], "[],:")
+		if candidate == "" || strings.EqualFold(candidate, "invalid") {
+			continue
+		}
+		return candidate
+	}
+	return ""
+}
+
+func authLogEvidence(counts authLogCounts) string {
+	return fmt.Sprintf(
+		"accepted_count=%d; failed_count=%d; invalid_user_count=%d; unique_source_ips=%d",
+		counts.Accepted,
+		counts.Failed,
+		counts.InvalidUsers,
+		len(counts.SourceIPs),
+	)
 }
 
 func parseSyslogTimestamp(line string, now time.Time) (time.Time, bool) {
@@ -1340,6 +1540,28 @@ func nprocLimitEntries() ([]string, []string) {
 	}
 
 	return unique(entries), unique(readErrors)
+}
+
+func processLimitEntries() ([]string, []string) {
+	entries, readErrors := nprocLimitEntries()
+	entries = append(entries, cgroupPidsLimitEntries()...)
+	return unique(entries), unique(readErrors)
+}
+
+func cgroupPidsLimitEntries() []string {
+	entries := []string{}
+	for _, path := range cgroupPidsPaths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		value := strings.TrimSpace(string(data))
+		if value == "" || value == "max" {
+			continue
+		}
+		entries = append(entries, filepath.Base(path)+"="+value)
+	}
+	return entries
 }
 
 func limitsFiles() ([]string, error) {
@@ -1456,11 +1678,43 @@ func suspiciousRootProcesses(processes []processInfo) []processInfo {
 		if strings.Contains(command, "/tmp/") ||
 			strings.Contains(command, "/dev/shm/") ||
 			strings.Contains(command, "(deleted)") ||
-			strings.Contains(command, " deleted") {
+			strings.Contains(command, " deleted") ||
+			rootCommandHasUnusualPath(command) {
 			suspicious = append(suspicious, process)
 		}
 	}
 	return suspicious
+}
+
+func rootCommandHasUnusualPath(command string) bool {
+	command = strings.TrimSpace(command)
+	if command == "" || strings.HasPrefix(command, "[") {
+		return false
+	}
+	fields := strings.Fields(command)
+	if len(fields) == 0 {
+		return false
+	}
+	executable := fields[0]
+	if !strings.HasPrefix(executable, "/") {
+		return false
+	}
+	allowedPrefixes := []string{
+		"/bin/",
+		"/sbin/",
+		"/usr/",
+		"/lib/",
+		"/lib64/",
+		"/opt/",
+		"/snap/",
+		"/run/",
+	}
+	for _, prefix := range allowedPrefixes {
+		if strings.HasPrefix(executable, prefix) {
+			return false
+		}
+	}
+	return true
 }
 
 func processEvidence(processes []processInfo, limit int) string {
@@ -1487,11 +1741,7 @@ func compactCommand(command string) string {
 }
 
 func aptPeriodicEnabled() bool {
-	paths := []string{
-		"/etc/apt/apt.conf.d/20auto-upgrades",
-		"/etc/apt/apt.conf.d/50unattended-upgrades",
-	}
-	for _, path := range paths {
+	for _, path := range aptPeriodicPaths {
 		data, err := os.ReadFile(path)
 		if err != nil {
 			continue
@@ -1558,6 +1808,92 @@ func detectFirewallStatus(ctx checks.Context) firewallStatus {
 	sort.Strings(status.InstalledSignals)
 	sort.Strings(status.Errors)
 	return status
+}
+
+func installedSignalsEvidence(signals []string) string {
+	if len(signals) == 0 {
+		return "installed_signals=none"
+	}
+	return "installed_signals=" + strings.Join(signals, ",")
+}
+
+func detectXTGeoIP(ctx checks.Context) []string {
+	signals := []string{}
+	if output, err := ctx.Runner.Run(ctx.Context, "lsmod"); err == nil {
+		if outputHasGeoIP(string(output)) {
+			signals = append(signals, "lsmod=xt_geoip")
+		}
+	}
+
+	if data, err := os.ReadFile(ipTablesMatchesPath); err == nil {
+		if outputHasGeoIP(string(data)) {
+			signals = append(signals, "ip_tables_matches=geoip")
+		}
+	}
+
+	kernel := ""
+	if output, err := ctx.Runner.Run(ctx.Context, "uname", "-r"); err == nil {
+		kernel = strings.TrimSpace(string(output))
+	}
+	for _, root := range moduleSearchRoots(kernel) {
+		if pathHasGeoIPModule(root) {
+			signals = append(signals, "module_tree="+root)
+			break
+		}
+	}
+
+	signals = unique(signals)
+	sort.Strings(signals)
+	return signals
+}
+
+func outputHasGeoIP(output string) bool {
+	lower := strings.ToLower(output)
+	for _, field := range strings.Fields(lower) {
+		field = strings.Trim(field, ".,:;[]()")
+		if field == "xt_geoip" || field == "geoip" || strings.Contains(field, "xt_geoip") {
+			return true
+		}
+	}
+	return false
+}
+
+func moduleSearchRoots(kernel string) []string {
+	roots := []string{}
+	if kernel != "" {
+		roots = append(roots, filepath.Join(libModulesPath, kernel))
+	}
+	roots = append(roots, libModulesPath)
+	return roots
+}
+
+func pathHasGeoIPModule(root string) bool {
+	info, err := os.Stat(root)
+	if err != nil {
+		return false
+	}
+	if !info.IsDir() {
+		return outputHasGeoIP(filepath.Base(root))
+	}
+
+	found := false
+	_ = filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil || entry == nil {
+			return nil
+		}
+		if entry.IsDir() && path != root {
+			name := strings.ToLower(entry.Name())
+			if name == "build" || name == "source" {
+				return filepath.SkipDir
+			}
+		}
+		if outputHasGeoIP(entry.Name()) {
+			found = true
+			return filepath.SkipDir
+		}
+		return nil
+	})
+	return found
 }
 
 func iptablesLooksConfigured(output string) bool {
