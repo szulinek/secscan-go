@@ -14,6 +14,7 @@ import (
 	"secscan/internal/audit"
 	"secscan/internal/execx"
 	"secscan/internal/report/batchreport"
+	"secscan/internal/report/comparereport"
 	"secscan/internal/report/htmlreport"
 	"secscan/internal/report/pdfreport"
 	"secscan/internal/report/publishreport"
@@ -37,6 +38,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runReport(args[1:], stdout, stderr)
 	case "batch-report":
 		return runBatchReport(args[1:], stdout, stderr)
+	case "compare":
+		return runCompare(args[1:], stdout, stderr)
 	case "send-report":
 		return runSendReport(args[1:], stdout, stderr)
 	case "publish-report":
@@ -383,6 +386,74 @@ func runBatchReport(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+func runCompare(args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("compare", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	oldPath := flags.String("old", "", "previous audit JSON file")
+	newPath := flags.String("new", "", "current audit JSON file")
+	format := flags.String("format", "html", "compare report format: html or pdf")
+	output := flags.String("output", "", "output file path")
+	wkhtmltopdf := flags.String("wkhtmltopdf", "wkhtmltopdf", "path to wkhtmltopdf binary for PDF output")
+	if err := flags.Parse(args); err != nil {
+		return 2
+	}
+	if *oldPath == "" {
+		fmt.Fprintln(stderr, "missing required --old previous-audit.json")
+		return 2
+	}
+	if *newPath == "" {
+		fmt.Fprintln(stderr, "missing required --new current-audit.json")
+		return 2
+	}
+	if *output == "" {
+		fmt.Fprintln(stderr, "missing required --output compare.html")
+		return 2
+	}
+	if *format != "html" && *format != "pdf" {
+		fmt.Fprintf(stderr, "unsupported compare report format: %s\n", *format)
+		return 2
+	}
+
+	previous, err := readAuditReport(*oldPath)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	current, err := readAuditReport(*newPath)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+
+	file, err := os.Create(*output)
+	if err != nil {
+		fmt.Fprintf(stderr, "create output: %v\n", err)
+		return 1
+	}
+	defer file.Close()
+
+	switch *format {
+	case "html":
+		if err := comparereport.Render(file, previous, current); err != nil {
+			fmt.Fprintf(stderr, "render compare report: %v\n", err)
+			return 1
+		}
+	case "pdf":
+		var html bytes.Buffer
+		if err := comparereport.Render(&html, previous, current); err != nil {
+			fmt.Fprintf(stderr, "render compare report: %v\n", err)
+			return 1
+		}
+		if err := pdfreport.RenderHTML(file, html.Bytes(), pdfreport.Options{Binary: *wkhtmltopdf}); err != nil {
+			fmt.Fprintf(stderr, "render compare pdf: %v\n", err)
+			return 1
+		}
+	}
+
+	fmt.Fprintf(stdout, "wrote %s compare report to %s\n", *format, *output)
+	return 0
+}
+
 func readAuditReport(path string) (audit.Report, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -417,6 +488,7 @@ Usage:
   secscan report --input audit.json --format html --type client
   secscan report --input audit.json --format pdf --type client > report.pdf
   secscan batch-report --input-dir reports --format pdf --type client --output client-audit.pdf
+  secscan compare --old reports/host-2026-05-01.json --new reports/host-2026-05-10.json --format html --output compare.html
   secscan send-report --input audit.json --type client --smtp-config config/smtp.json --to client@example.com
   secscan publish-report --input audit.json --ssh-host reports.example.pl --ssh-user lh --ssh-port 40022 --remote-dir /home/lh/domains/example.pl/public_html/audits --public-base-url https://example.pl/audits
   secscan run --all --type client --output-dir reports --publish --ssh-host reports.example.pl --ssh-user lh --ssh-port 40022 --remote-dir /home/lh/domains/example.pl/public_html/audits --public-base-url https://example.pl/audits --latest --smtp-config config/smtp.json --to client@example.com
@@ -428,6 +500,7 @@ Commands:
   detect   detect host/services/modules only, print JSON
   report   render a JSON audit into a client or admin HTML/PDF report
   batch-report render many JSON audits into one client or admin HTML/PDF report
+  compare  compare two JSON audits and render an HTML/PDF change report
   send-report render a client/admin PDF report and send it through SMTP
   publish-report render a client HTML report and upload it through rsync/SSH
   run      run audit, save artifacts, optionally publish and email
