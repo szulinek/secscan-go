@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"secscan/internal/checks"
+	"secscan/internal/checks/docker"
 	"secscan/internal/checks/linux"
 	"secscan/internal/checks/nginx"
 	"secscan/internal/checks/phpfpm"
@@ -68,6 +69,7 @@ func DefaultRegistry() checks.Registry {
 		ssh.NewModule(),
 		nginx.NewModule(),
 		phpfpm.NewModule(),
+		docker.NewModule(),
 	}
 	modules = append(modules, service.DefaultModules()...)
 

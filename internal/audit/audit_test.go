@@ -70,12 +70,12 @@ func TestRunWithOptionsExecutesAllModulesWhenServiceIsNotDetected(t *testing.T) 
 	}
 
 	report := RunWithOptions(context.Background(), runner, DefaultRegistry(), Options{AllModules: true})
-	if len(report.Modules) != 12 {
-		t.Fatalf("expected 12 modules, got %d", len(report.Modules))
+	if len(report.Modules) != 13 {
+		t.Fatalf("expected 13 modules, got %d", len(report.Modules))
 	}
 
-	if len(report.Results) != 41 {
-		t.Fatalf("expected 41 checks, got %d", len(report.Results))
+	if len(report.Results) != 56 {
+		t.Fatalf("expected 56 checks, got %d", len(report.Results))
 	}
 
 	if report.Modules[1].Detected {
@@ -90,8 +90,14 @@ func TestRunWithOptionsExecutesAllModulesWhenServiceIsNotDetected(t *testing.T) 
 		t.Fatalf("unexpected audit mode: %s", report.Meta["audit_mode"])
 	}
 
-	if report.Summary["pass"] != 3 {
-		t.Fatalf("expected 3 passing ssh checks, got %d", report.Summary["pass"])
+	sshPass := 0
+	for _, result := range report.Results {
+		if result.ModuleID == "sshd" && result.Status == checks.StatusPass {
+			sshPass++
+		}
+	}
+	if sshPass != 3 {
+		t.Fatalf("expected 3 passing ssh checks, got %d", sshPass)
 	}
 
 	if len(report.Inventory.Modules) != len(report.Modules) {
