@@ -58,18 +58,6 @@ func DefaultModules() []checks.Module {
 			},
 		}),
 		New(Definition{
-			ID:        "redis",
-			Name:      "Redis",
-			Service:   "redis",
-			Category:  checks.CategoryCache,
-			UnitNames: []string{"redis.service", "redis-server.service"},
-			UnitGlobs: []string{"redis*.service"},
-			DetectPaths: []string{
-				"/usr/bin/redis-server",
-				"/etc/redis/redis.conf",
-			},
-		}),
-		New(Definition{
 			ID:        "named_bind",
 			Name:      "Named / BIND",
 			Service:   "named/bind",

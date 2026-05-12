@@ -60,6 +60,8 @@ func TestRunExecutesSSHDChecksWhenServiceDetected(t *testing.T) {
 }
 
 func TestRunWithOptionsExecutesAllModulesWhenServiceIsNotDetected(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+
 	runner := fakeRunner{
 		"systemctl list-units --type=service --state=running --no-legend --no-pager --plain": "",
 		"sshd -T": strings.Join([]string{
@@ -74,8 +76,8 @@ func TestRunWithOptionsExecutesAllModulesWhenServiceIsNotDetected(t *testing.T) 
 		t.Fatalf("expected 13 modules, got %d", len(report.Modules))
 	}
 
-	if len(report.Results) != 56 {
-		t.Fatalf("expected 56 checks, got %d", len(report.Results))
+	if len(report.Results) != 61 {
+		t.Fatalf("expected 61 checks, got %d", len(report.Results))
 	}
 
 	if report.Modules[1].Detected {
@@ -98,6 +100,16 @@ func TestRunWithOptionsExecutesAllModulesWhenServiceIsNotDetected(t *testing.T) 
 	}
 	if sshPass != 3 {
 		t.Fatalf("expected 3 passing ssh checks, got %d", sshPass)
+	}
+
+	redisChecks := 0
+	for _, result := range report.Results {
+		if result.ModuleID == "redis" {
+			redisChecks++
+		}
+	}
+	if redisChecks != 6 {
+		t.Fatalf("expected 6 redis checks, got %d", redisChecks)
 	}
 
 	if len(report.Inventory.Modules) != len(report.Modules) {

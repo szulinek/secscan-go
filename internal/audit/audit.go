@@ -9,6 +9,7 @@ import (
 	"secscan/internal/checks/linux"
 	"secscan/internal/checks/nginx"
 	"secscan/internal/checks/phpfpm"
+	"secscan/internal/checks/redis"
 	"secscan/internal/checks/service"
 	"secscan/internal/checks/ssh"
 	"secscan/internal/execx"
@@ -70,6 +71,7 @@ func DefaultRegistry() checks.Registry {
 		nginx.NewModule(),
 		phpfpm.NewModule(),
 		docker.NewModule(),
+		redis.NewModule(),
 	}
 	modules = append(modules, service.DefaultModules()...)
 
