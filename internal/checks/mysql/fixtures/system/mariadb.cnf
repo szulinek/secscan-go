@@ -1,0 +1,6 @@
+[server]
+skip-networking
+skip-name-resolve
+
+[mariadb]
+max_connections=200

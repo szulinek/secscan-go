@@ -1,0 +1,2 @@
+have_ssl	YES
+require_secure_transport	ON

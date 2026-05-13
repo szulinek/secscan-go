@@ -1,0 +1,2 @@
+have_ssl	DISABLED
+require_secure_transport	OFF

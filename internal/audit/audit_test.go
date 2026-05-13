@@ -76,8 +76,8 @@ func TestRunWithOptionsExecutesAllModulesWhenServiceIsNotDetected(t *testing.T) 
 		t.Fatalf("expected 14 modules, got %d", len(report.Modules))
 	}
 
-	if len(report.Results) != 70 {
-		t.Fatalf("expected 70 checks, got %d", len(report.Results))
+	if len(report.Results) != 81 {
+		t.Fatalf("expected 81 checks, got %d", len(report.Results))
 	}
 
 	if report.Modules[1].Detected {
@@ -105,6 +105,7 @@ func TestRunWithOptionsExecutesAllModulesWhenServiceIsNotDetected(t *testing.T) 
 	redisChecks := 0
 	phpChecks := 0
 	varnishChecks := 0
+	mysqlChecks := 0
 	for _, result := range report.Results {
 		if result.ModuleID == "redis" {
 			redisChecks++
@@ -115,6 +116,9 @@ func TestRunWithOptionsExecutesAllModulesWhenServiceIsNotDetected(t *testing.T) 
 		if result.ModuleID == "varnish" {
 			varnishChecks++
 		}
+		if result.ModuleID == "mysql_mariadb" {
+			mysqlChecks++
+		}
 	}
 	if redisChecks != 6 {
 		t.Fatalf("expected 6 redis checks, got %d", redisChecks)
@@ -124,6 +128,9 @@ func TestRunWithOptionsExecutesAllModulesWhenServiceIsNotDetected(t *testing.T) 
 	}
 	if varnishChecks != 6 {
 		t.Fatalf("expected 6 varnish checks, got %d", varnishChecks)
+	}
+	if mysqlChecks != 12 {
+		t.Fatalf("expected 12 mysql checks, got %d", mysqlChecks)
 	}
 
 	if len(report.Inventory.Modules) != len(report.Modules) {

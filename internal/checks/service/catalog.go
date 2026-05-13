@@ -18,19 +18,6 @@ func DefaultModules() []checks.Module {
 			},
 		}),
 		New(Definition{
-			ID:        "mysql_mariadb",
-			Name:      "MySQL / MariaDB",
-			Service:   "mysql/mariadb",
-			Category:  checks.CategoryDatabase,
-			UnitNames: []string{"mysql.service", "mariadb.service", "mysqld.service"},
-			DetectPaths: []string{
-				"/usr/sbin/mysqld",
-				"/usr/local/mysql/bin/mysqld",
-				"/etc/mysql/my.cnf",
-				"/etc/my.cnf",
-			},
-		}),
-		New(Definition{
 			ID:        "exim",
 			Name:      "Exim",
 			Service:   "exim",
