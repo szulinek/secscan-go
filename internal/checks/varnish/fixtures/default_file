@@ -1,0 +1,1 @@
+DAEMON_OPTS="-a :6081 -T localhost:6082 -s file,/var/lib/varnish/cache.bin,1G"

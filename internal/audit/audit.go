@@ -12,6 +12,7 @@ import (
 	"secscan/internal/checks/redis"
 	"secscan/internal/checks/service"
 	"secscan/internal/checks/ssh"
+	"secscan/internal/checks/varnish"
 	"secscan/internal/execx"
 	"secscan/internal/system"
 )
@@ -72,6 +73,7 @@ func DefaultRegistry() checks.Registry {
 		phpfpm.NewModule(),
 		docker.NewModule(),
 		redis.NewModule(),
+		varnish.NewModule(),
 	}
 	modules = append(modules, service.DefaultModules()...)
 

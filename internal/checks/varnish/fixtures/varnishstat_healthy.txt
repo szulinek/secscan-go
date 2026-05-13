@@ -1,0 +1,4 @@
+MAIN.cache_hit 700
+MAIN.cache_miss 200
+MAIN.n_lru_nuked 0
+VBE.boot.default.happy 1

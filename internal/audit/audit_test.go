@@ -72,12 +72,12 @@ func TestRunWithOptionsExecutesAllModulesWhenServiceIsNotDetected(t *testing.T) 
 	}
 
 	report := RunWithOptions(context.Background(), runner, DefaultRegistry(), Options{AllModules: true})
-	if len(report.Modules) != 13 {
-		t.Fatalf("expected 13 modules, got %d", len(report.Modules))
+	if len(report.Modules) != 14 {
+		t.Fatalf("expected 14 modules, got %d", len(report.Modules))
 	}
 
-	if len(report.Results) != 64 {
-		t.Fatalf("expected 64 checks, got %d", len(report.Results))
+	if len(report.Results) != 70 {
+		t.Fatalf("expected 70 checks, got %d", len(report.Results))
 	}
 
 	if report.Modules[1].Detected {
@@ -104,6 +104,7 @@ func TestRunWithOptionsExecutesAllModulesWhenServiceIsNotDetected(t *testing.T) 
 
 	redisChecks := 0
 	phpChecks := 0
+	varnishChecks := 0
 	for _, result := range report.Results {
 		if result.ModuleID == "redis" {
 			redisChecks++
@@ -111,12 +112,18 @@ func TestRunWithOptionsExecutesAllModulesWhenServiceIsNotDetected(t *testing.T) 
 		if result.ModuleID == "php_fpm" {
 			phpChecks++
 		}
+		if result.ModuleID == "varnish" {
+			varnishChecks++
+		}
 	}
 	if redisChecks != 6 {
 		t.Fatalf("expected 6 redis checks, got %d", redisChecks)
 	}
 	if phpChecks != 10 {
 		t.Fatalf("expected 10 php checks, got %d", phpChecks)
+	}
+	if varnishChecks != 6 {
+		t.Fatalf("expected 6 varnish checks, got %d", varnishChecks)
 	}
 
 	if len(report.Inventory.Modules) != len(report.Modules) {

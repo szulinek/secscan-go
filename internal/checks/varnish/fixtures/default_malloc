@@ -1,0 +1,3 @@
+DAEMON_OPTS="-a :6081 \
+             -T localhost:6082 \
+             -s malloc,512m"
