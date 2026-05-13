@@ -76,8 +76,8 @@ func TestRunWithOptionsExecutesAllModulesWhenServiceIsNotDetected(t *testing.T) 
 		t.Fatalf("expected 13 modules, got %d", len(report.Modules))
 	}
 
-	if len(report.Results) != 61 {
-		t.Fatalf("expected 61 checks, got %d", len(report.Results))
+	if len(report.Results) != 64 {
+		t.Fatalf("expected 64 checks, got %d", len(report.Results))
 	}
 
 	if report.Modules[1].Detected {
@@ -103,13 +103,20 @@ func TestRunWithOptionsExecutesAllModulesWhenServiceIsNotDetected(t *testing.T) 
 	}
 
 	redisChecks := 0
+	phpChecks := 0
 	for _, result := range report.Results {
 		if result.ModuleID == "redis" {
 			redisChecks++
 		}
+		if result.ModuleID == "php_fpm" {
+			phpChecks++
+		}
 	}
 	if redisChecks != 6 {
 		t.Fatalf("expected 6 redis checks, got %d", redisChecks)
+	}
+	if phpChecks != 10 {
+		t.Fatalf("expected 10 php checks, got %d", phpChecks)
 	}
 
 	if len(report.Inventory.Modules) != len(report.Modules) {
