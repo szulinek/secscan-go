@@ -23,6 +23,7 @@ type viewData struct {
 	Title           string
 	GeneratedAt     string
 	Score           int
+	RiskGrade       string
 	HostLabel       string
 	PlatformLabel   string
 	ExecutiveText   string
@@ -116,9 +117,10 @@ func buildView(report audit.Report, reportType Type) viewData {
 		Title:           title,
 		GeneratedAt:     report.GeneratedAt,
 		Score:           report.Score,
+		RiskGrade:       report.RiskGrade,
 		HostLabel:       hostLabel(report),
 		PlatformLabel:   platformLabel(report.Host),
-		ExecutiveText:   executiveText(report.Score, report.SeverityIssues),
+		ExecutiveText:   executiveText(report.RiskGrade, report.SeverityIssues),
 		IssueCounts:     report.SeverityIssues,
 		TopFindings:     top,
 		TopEmptyText:    topEmptyText(reportType),
@@ -254,6 +256,7 @@ var pageTemplate = template.Must(template.New("report").Funcs(template.FuncMap{
     .score.warn { border-color: var(--warn); }
     .score.bad { border-color: var(--critical); }
     .score-copy strong { display: block; font-size: 20px; }
+    .risk-grade { display: inline-flex; align-items: center; min-height: 30px; margin-top: 8px; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--line); background: #fff; color: #344054; font-size: 13px; font-weight: 800; }
     .section { margin-top: 34px; }
     .summary {
       display: grid;
@@ -396,6 +399,7 @@ var pageTemplate = template.Must(template.New("report").Funcs(template.FuncMap{
           <div class="score {{ scoreClass .Score }}">{{ .Score }}/100</div>
           <div class="score-copy">
             <strong>{{ scoreLabel .Score }}</strong>
+            <div class="risk-grade">Risk grade {{ .RiskGrade }}</div>
             <span class="muted">Security score</span>
           </div>
         </div>
@@ -573,11 +577,18 @@ func hostLabel(report audit.Report) string {
 	if host := strings.TrimSpace(report.Meta["host"]); host != "" {
 		return host
 	}
+	primaryIP := strings.TrimSpace(report.Host.PrimaryIP)
 	if hostname := strings.TrimSpace(report.Host.Hostname); hostname != "" {
+		if primaryIP != "" {
+			return hostname + " / " + primaryIP
+		}
 		if len(report.Host.IPAddresses) > 0 {
 			return hostname + " / " + report.Host.IPAddresses[0]
 		}
 		return hostname
+	}
+	if primaryIP != "" {
+		return primaryIP
 	}
 	if len(report.Host.IPAddresses) > 0 {
 		return report.Host.IPAddresses[0]
@@ -599,22 +610,25 @@ func platformLabel(info system.Info) string {
 	return strings.Join(parts, " · ")
 }
 
-func executiveText(score int, issues map[string]int) string {
+func executiveText(grade string, issues map[string]int) string {
 	total := severityCount(issues, string(checks.SeverityCritical)) +
 		severityCount(issues, string(checks.SeverityHigh)) +
 		severityCount(issues, string(checks.SeverityMedium)) +
 		severityCount(issues, string(checks.SeverityLow))
 
 	if total == 0 {
-		return "The system is generally secure based on the current checks. No client-visible risks were identified in this audit."
+		return "The system shows a good security posture based on the current checks. No client-visible risks were identified in this audit."
 	}
-	if score >= 90 {
-		return "The system is generally secure, but several improvements are recommended to reduce operational and security risk."
+	switch grade {
+	case "A", "B":
+		return "The system shows a good security posture, with limited remediation recommended to reduce residual risk."
+	case "C":
+		return "The system needs improvement. Remediate the listed findings to reduce exposure and strengthen the baseline."
+	case "D", "F":
+		return "The system is high risk. Prioritize critical and high findings before expanding the scope of the audit."
+	default:
+		return "The system needs improvement. Review the listed findings and prioritize remediation by severity."
 	}
-	if score >= 70 {
-		return "The system has a usable security baseline, but the listed findings should be remediated to reduce exposure."
-	}
-	return "The system requires security attention. Prioritize critical and high findings before expanding the scope of the audit."
 }
 
 func topEmptyText(reportType Type) string {

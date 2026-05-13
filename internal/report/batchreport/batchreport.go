@@ -369,6 +369,9 @@ func hostIP(report audit.Report) string {
 	if value := strings.TrimSpace(report.Meta["ip"]); value != "" {
 		return value
 	}
+	if value := strings.TrimSpace(report.Host.PrimaryIP); value != "" {
+		return value
+	}
 	if len(report.Host.IPAddresses) > 0 {
 		return strings.Join(report.Host.IPAddresses, ", ")
 	}

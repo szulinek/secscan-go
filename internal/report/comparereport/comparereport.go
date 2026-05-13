@@ -289,8 +289,8 @@ func buildView(report Report) viewData {
 }
 
 func hostLabel(report audit.Report) string {
-	ip := ""
-	if len(report.Host.IPAddresses) > 0 {
+	ip := strings.TrimSpace(report.Host.PrimaryIP)
+	if ip == "" && len(report.Host.IPAddresses) > 0 {
 		ip = report.Host.IPAddresses[0]
 	}
 	if report.Host.Hostname != "" && ip != "" {

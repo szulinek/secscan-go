@@ -55,6 +55,7 @@ type Report struct {
 	SeverityCounts map[string]int    `json:"severity_counts"`
 	SeverityIssues map[string]int    `json:"severity_issues"`
 	Score          int               `json:"score"`
+	RiskGrade      string            `json:"risk_grade"`
 	TopFindings    []checks.Result   `json:"top_findings"`
 	ClientFindings []checks.Result   `json:"client_findings"`
 	AdminFindings  []checks.Result   `json:"admin_findings"`
@@ -151,6 +152,7 @@ func Detect(ctx context.Context, runner execx.Runner, registry checks.Registry) 
 	report.SeverityCounts = nil
 	report.SeverityIssues = nil
 	report.Score = 0
+	report.RiskGrade = ""
 	report.TopFindings = nil
 	report.ClientFindings = nil
 	report.AdminFindings = nil

@@ -54,8 +54,8 @@ func TestRunExecutesSSHDChecksWhenServiceDetected(t *testing.T) {
 		t.Fatalf("expected factual SSH title, got %q", report.Results[1].Title)
 	}
 
-	if report.Score != 90 {
-		t.Fatalf("expected warning-capped score 90, got %d", report.Score)
+	if report.Score != 97 {
+		t.Fatalf("expected calibrated warning score 97, got %d", report.Score)
 	}
 }
 
@@ -195,8 +195,11 @@ func TestPrepareReportScoresAndClassifiesFindings(t *testing.T) {
 	}
 
 	PrepareReport(&report)
-	if report.Score != 65 {
-		t.Fatalf("expected score 65, got %d", report.Score)
+	if report.Score != 66 {
+		t.Fatalf("expected score 66, got %d", report.Score)
+	}
+	if report.RiskGrade != "D" {
+		t.Fatalf("expected risk grade D, got %s", report.RiskGrade)
 	}
 	if len(report.TopFindings) != 3 {
 		t.Fatalf("expected 3 top findings, got %d", len(report.TopFindings))
@@ -226,11 +229,22 @@ func TestPrepareReportScoresAndClassifiesFindings(t *testing.T) {
 
 func TestScoreWarnPenaltiesAndCap(t *testing.T) {
 	report := Report{Results: []checks.Result{
-		{ID: "medium.warn", Severity: checks.SeverityMedium, Status: checks.StatusWarn},
+		{ID: "medium.warn.1", Severity: checks.SeverityMedium, Status: checks.StatusWarn},
+		{ID: "medium.warn.2", Severity: checks.SeverityMedium, Status: checks.StatusWarn},
+		{ID: "medium.warn.3", Severity: checks.SeverityMedium, Status: checks.StatusWarn},
+		{ID: "low.warn", Severity: checks.SeverityLow, Status: checks.StatusWarn},
 	}}
 	PrepareReport(&report)
 	if report.Score != 90 {
-		t.Fatalf("medium warn should subtract 5 but cap score to 90, got %d", report.Score)
+		t.Fatalf("low/medium warnings should keep score at 90 or above for this mix, got %d", report.Score)
+	}
+
+	report = Report{Results: []checks.Result{
+		{ID: "high.warn", Severity: checks.SeverityHigh, Status: checks.StatusWarn},
+	}}
+	PrepareReport(&report)
+	if report.Score != 90 {
+		t.Fatalf("high warning should cap score at 90, got %d", report.Score)
 	}
 
 	report = Report{Results: []checks.Result{
@@ -256,11 +270,57 @@ func TestScoreWarnPenaltiesAndCap(t *testing.T) {
 }
 
 func TestWarnPenaltyValues(t *testing.T) {
-	if got := scorePenalty(checks.Result{Severity: checks.SeverityMedium, Status: checks.StatusWarn}); got != 5 {
-		t.Fatalf("medium warn penalty: expected 5, got %.1f", got)
+	if got := scorePenalty(checks.Result{Severity: checks.SeverityCritical, Status: checks.StatusWarn}); got != 10 {
+		t.Fatalf("critical warn penalty: expected 10, got %.1f", got)
 	}
-	if got := scorePenalty(checks.Result{Severity: checks.SeverityLow, Status: checks.StatusWarn}); got != 2 {
-		t.Fatalf("low warn penalty: expected 2, got %.1f", got)
+	if got := scorePenalty(checks.Result{Severity: checks.SeverityHigh, Status: checks.StatusWarn}); got != 6 {
+		t.Fatalf("high warn penalty: expected 6, got %.1f", got)
+	}
+	if got := scorePenalty(checks.Result{Severity: checks.SeverityMedium, Status: checks.StatusWarn}); got != 3 {
+		t.Fatalf("medium warn penalty: expected 3, got %.1f", got)
+	}
+	if got := scorePenalty(checks.Result{Severity: checks.SeverityLow, Status: checks.StatusWarn}); got != 1 {
+		t.Fatalf("low warn penalty: expected 1, got %.1f", got)
+	}
+}
+
+func TestFailAndErrorPenaltyValues(t *testing.T) {
+	if got := scorePenalty(checks.Result{Severity: checks.SeverityCritical, Status: checks.StatusFail}); got != 25 {
+		t.Fatalf("critical fail penalty: expected 25, got %.1f", got)
+	}
+	if got := scorePenalty(checks.Result{Severity: checks.SeverityHigh, Status: checks.StatusFail}); got != 15 {
+		t.Fatalf("high fail penalty: expected 15, got %.1f", got)
+	}
+	if got := scorePenalty(checks.Result{Severity: checks.SeverityMedium, Status: checks.StatusFail}); got != 7 {
+		t.Fatalf("medium fail penalty: expected 7, got %.1f", got)
+	}
+	if got := scorePenalty(checks.Result{Severity: checks.SeverityLow, Status: checks.StatusFail}); got != 3 {
+		t.Fatalf("low fail penalty: expected 3, got %.1f", got)
+	}
+	if got := scorePenalty(checks.Result{Severity: checks.SeverityMedium, Status: checks.StatusError}); got != 2 {
+		t.Fatalf("medium error penalty: expected 2, got %.1f", got)
+	}
+	if got := scorePenalty(checks.Result{Severity: checks.SeverityHigh, Status: checks.StatusError}); got != 5 {
+		t.Fatalf("high error penalty: expected 5, got %.1f", got)
+	}
+}
+
+func TestRiskGradeMapping(t *testing.T) {
+	cases := map[int]string{
+		100: "A",
+		90:  "A",
+		89:  "B",
+		80:  "B",
+		79:  "C",
+		70:  "C",
+		69:  "D",
+		50:  "D",
+		49:  "F",
+	}
+	for score, want := range cases {
+		if got := riskGrade(score); got != want {
+			t.Fatalf("riskGrade(%d): expected %s, got %s", score, want, got)
+		}
 	}
 }
 

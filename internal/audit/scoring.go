@@ -47,6 +47,7 @@ func PrepareReport(report *Report) {
 	report.TopFindings = topFindings(report.Results, 10)
 	report.ModuleSummary = moduleSummary(report.Modules, report.Results)
 	report.Score = calculateScore(report.Results)
+	report.RiskGrade = riskGrade(report.Score)
 }
 
 func emptyStatusSummary() map[string]int {
@@ -81,16 +82,20 @@ func emptySeverityIssues() map[string]int {
 
 func calculateScore(results []checks.Result) int {
 	penalty := 0.0
-	hasWarn := false
+	hasFail := false
+	hasHighCriticalWarn := false
 	for _, result := range results {
-		if result.Status == checks.StatusWarn {
-			hasWarn = true
+		if result.Status == checks.StatusFail {
+			hasFail = true
+		}
+		if result.Status == checks.StatusWarn && (result.Severity == checks.SeverityHigh || result.Severity == checks.SeverityCritical) {
+			hasHighCriticalWarn = true
 		}
 		penalty += scorePenalty(result)
 	}
 
 	score := int(math.Round(100 - penalty))
-	if hasWarn && score > 90 {
+	if (hasFail || hasHighCriticalWarn) && score > 90 {
 		score = 90
 	}
 	if score < 0 {
@@ -101,6 +106,21 @@ func calculateScore(results []checks.Result) int {
 	}
 
 	return score
+}
+
+func riskGrade(score int) string {
+	switch {
+	case score >= 90:
+		return "A"
+	case score >= 80:
+		return "B"
+	case score >= 70:
+		return "C"
+	case score >= 50:
+		return "D"
+	default:
+		return "F"
+	}
 }
 
 func topFindings(results []checks.Result, limit int) []checks.Result {
@@ -213,6 +233,12 @@ func scorePenalty(result checks.Result) float64 {
 	if result.Status == checks.StatusWarn {
 		return warnPenalty(result.Severity)
 	}
+	if result.Status == checks.StatusError {
+		if result.Severity == checks.SeverityHigh || result.Severity == checks.SeverityCritical {
+			return 5
+		}
+		return 2
+	}
 
 	return 0
 }
@@ -224,7 +250,7 @@ func failPenalty(severity checks.Severity) float64 {
 	case checks.SeverityHigh:
 		return 15
 	case checks.SeverityMedium:
-		return 8
+		return 7
 	case checks.SeverityLow:
 		return 3
 	default:
@@ -235,13 +261,13 @@ func failPenalty(severity checks.Severity) float64 {
 func warnPenalty(severity checks.Severity) float64 {
 	switch severity {
 	case checks.SeverityCritical:
-		return 12.5
+		return 10
 	case checks.SeverityHigh:
-		return 7.5
+		return 6
 	case checks.SeverityMedium:
-		return 5
+		return 3
 	case checks.SeverityLow:
-		return 2
+		return 1
 	default:
 		return 0
 	}
