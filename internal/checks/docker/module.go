@@ -33,6 +33,8 @@ var (
 	dockerContainersPath   = "/var/lib/docker/containers"
 	dockerDaemonConfigPath = "/etc/docker/daemon.json"
 	dockerBinaryPaths      = []string{"/usr/bin/docker", "/usr/local/bin/docker", "/bin/docker"}
+	dockerSocketPaths      = []string{"/var/run/docker.sock", "/run/docker.sock"}
+	ownerGroupLookup       = ownerGroup
 	lookPath               = exec.LookPath
 )
 
@@ -174,10 +176,10 @@ func (c checkSocketPermissions) Title() string {
 }
 
 func (c checkSocketPermissions) Run(ctx checks.Context) checks.Result {
-	result := newResult(c.ID(), c.Title(), checks.CategorySystem, checks.SeverityHigh, checks.StatusPass)
-	result.Summary = "Docker socket permissions are not world-writable."
-	result.ClientSummary = "Docker socket permissions are not world-writable."
-	result.AdminDetails = "Inspected /var/run/docker.sock mode, owner, and group."
+	result := newResult(c.ID(), c.Title(), checks.CategorySystem, checks.SeverityLow, checks.StatusPass)
+	result.Summary = "Docker socket permissions match the standard local Docker Engine configuration."
+	result.ClientSummary = "Docker socket permissions look standard."
+	result.AdminDetails = "Inspected Docker socket mode, owner, group, socket type, path, and public TCP listeners."
 	result.Impact = "Write access to the Docker socket is effectively root-level control of the host."
 	result.Recommendation = "Restrict Docker socket write access to trusted administrators and avoid broad group membership."
 	result.Remediation = result.Recommendation
@@ -190,7 +192,7 @@ func (c checkSocketPermissions) Run(ctx checks.Context) checks.Result {
 		"https://docs.docker.com/engine/security/protect-access/",
 		"https://docs.docker.com/engine/install/linux-postinstall/",
 	}
-	result.Automation = checks.Automation{Shell: "stat -c '%a %U %G %n' /var/run/docker.sock"}
+	result.Automation = checks.Automation{Shell: "stat -c '%a %U %G %n' /var/run/docker.sock; ss -lntp | grep -E 'dockerd|:2375|:2376' || true"}
 
 	info, err := os.Stat(dockerSocketPath)
 	if err != nil {
@@ -216,16 +218,62 @@ func (c checkSocketPermissions) Run(ctx checks.Context) checks.Result {
 	}
 
 	mode := info.Mode()
-	result.Evidence = socketEvidence(info)
+	owner, group := ownerGroupLookup(info)
+	tcpListeners, tcpEvidence := ssDockerAPIListeners(ctx)
+	result.Evidence = socketEvidence(info, owner, group) + "; " + tcpListenerEvidence(tcpListeners, tcpEvidence)
+	publicAPI := publicDockerAPIListeners(tcpListeners)
 	switch {
+	case len(publicAPI) > 0:
+		result.Title = "Docker API is exposed on a public TCP listener"
+		result.Status = checks.StatusFail
+		result.Severity = checks.SeverityHigh
+		result.Summary = "Docker API appears to listen on a public TCP endpoint."
+		result.ClientSummary = "Docker remote API exposure is a high-risk finding."
+		result.Evidence = socketEvidence(info, owner, group) + "; " + tcpListenerEvidence(publicAPI, tcpEvidence)
 	case mode.Perm()&0002 != 0:
 		result.Title = "Docker socket is world-writable"
-		result.Status = checks.StatusFail
+		result.Status = checks.StatusWarn
+		result.Severity = checks.SeverityHigh
 		result.Summary = "Docker socket is writable by all local users."
 		result.ClientSummary = "Docker socket permissions are unsafe."
+	case !isRootOwner(owner):
+		result.Title = "Docker socket owner is not root"
+		result.Status = checks.StatusWarn
+		result.Severity = checks.SeverityHigh
+		result.Summary = "Docker socket is not owned by root."
+		result.ClientSummary = "Docker socket ownership should be reviewed."
+	case mode&os.ModeSocket == 0:
+		result.Title = "Docker socket path is not a Unix socket"
+		result.Status = checks.StatusWarn
+		result.Severity = checks.SeverityHigh
+		result.Summary = "Docker socket path exists but is not a Unix socket."
+		result.ClientSummary = "Docker socket path should be reviewed."
+	case !isExpectedSocketPath(dockerSocketPath):
+		result.Title = "Docker socket is outside expected paths"
+		result.Status = checks.StatusWarn
+		result.Severity = checks.SeverityHigh
+		result.Summary = "Docker socket path is outside the standard Docker Engine paths."
+		result.ClientSummary = "Docker socket location should be reviewed."
+	case mode.Perm() == 0660 && isDockerGroup(group):
+		result.Title = "Docker socket uses standard root:docker permissions"
+		result.Summary = "Docker socket is owned by root:docker with mode 0660 and no public TCP API listener was detected."
+		result.ClientSummary = "Docker socket permissions match the standard Docker Engine configuration."
+		result.AdminDetails += "\nMembers of docker group effectively have root-equivalent access."
+	case mode.Perm() == 0600:
+		result.Title = "Docker socket is root-only"
+		result.Summary = "Docker socket mode is 0600 and no public TCP API listener was detected."
+		result.ClientSummary = "Docker socket is restricted to the owner."
+	case mode.Perm()&0020 != 0 && isDockerGroup(group):
+		result.Title = "Docker socket is writable by the docker group"
+		result.Status = checks.StatusInfo
+		result.Severity = checks.SeverityLow
+		result.Summary = "Docker socket is writable by the docker group."
+		result.ClientSummary = "Docker socket docker-group access should be limited to trusted administrators."
+		result.AdminDetails += "\nMembers of docker group effectively have root-equivalent access."
 	case mode.Perm()&0020 != 0:
 		result.Title = "Docker socket is group-writable"
 		result.Status = checks.StatusWarn
+		result.Severity = checks.SeverityMedium
 		result.Summary = "Docker socket is writable by its owning group."
 		result.ClientSummary = "Docker socket group write access should be reviewed."
 	default:
@@ -274,16 +322,14 @@ func (c checkExposedTCPSocket) Run(ctx checks.Context) checks.Result {
 		return result
 	}
 
-	public2375 := filterEndpoints(endpoints, func(endpoint tcpEndpoint) bool {
-		return endpoint.Port == "2375" && !isLoopbackHost(endpoint.Host)
-	})
-	if len(public2375) > 0 {
-		result.Title = "Docker API is exposed on TCP port 2375"
+	publicAPI := publicDockerAPIListeners(endpoints)
+	if len(publicAPI) > 0 {
+		result.Title = "Docker API is exposed on a public TCP listener"
 		result.Status = checks.StatusFail
 		result.Severity = checks.SeverityHigh
-		result.Summary = "Docker API appears to listen on an unauthenticated TCP endpoint."
-		result.ClientSummary = "Docker remote API exposure on port 2375 is a high-risk finding."
-		result.Evidence = joinEvidence(endpointEvidence(public2375), 10)
+		result.Summary = "Docker API appears to listen on a public TCP endpoint."
+		result.ClientSummary = "Docker remote API exposure is a high-risk finding."
+		result.Evidence = joinEvidence(endpointEvidence(publicAPI), 10)
 		return result
 	}
 
@@ -1083,10 +1129,56 @@ func (i dockerVersionInfo) evidence() string {
 	return "client_version=" + i.ClientVersion + "; server_version=" + i.ServerVersion
 }
 
-func socketEvidence(info fs.FileInfo) string {
+func socketEvidence(info fs.FileInfo, owner, group string) string {
 	mode := info.Mode()
-	owner, group := ownerGroup(info)
 	return fmt.Sprintf("mode=%04o owner=%s group=%s path=%s", mode.Perm(), owner, group, dockerSocketPath)
+}
+
+func isRootOwner(owner string) bool {
+	owner = strings.ToLower(strings.TrimSpace(owner))
+	return owner == "root" || owner == "0" || strings.HasPrefix(owner, "root(")
+}
+
+func isDockerGroup(group string) bool {
+	group = strings.ToLower(strings.TrimSpace(group))
+	return group == "docker" || strings.HasPrefix(group, "docker(")
+}
+
+func isExpectedSocketPath(path string) bool {
+	clean := filepath.Clean(path)
+	for _, expected := range dockerSocketPaths {
+		if clean == filepath.Clean(expected) {
+			return true
+		}
+	}
+	return false
+}
+
+func ssDockerAPIListeners(ctx checks.Context) ([]tcpEndpoint, string) {
+	if ctx.Runner == nil {
+		return nil, "tcp_listeners=unavailable"
+	}
+	output, err := ctx.Runner.Run(ctx.Context, "ss", "-lntp")
+	if err != nil {
+		return nil, "tcp_listeners=unavailable"
+	}
+	return parseSSTCPEndpoints(string(output)), "tcp_listeners=checked"
+}
+
+func publicDockerAPIListeners(endpoints []tcpEndpoint) []tcpEndpoint {
+	return filterEndpoints(endpoints, func(endpoint tcpEndpoint) bool {
+		return (endpoint.Port == "2375" || endpoint.Port == "2376") && !isLoopbackHost(endpoint.Host)
+	})
+}
+
+func tcpListenerEvidence(endpoints []tcpEndpoint, fallback string) string {
+	if len(endpoints) == 0 {
+		if fallback == "" || fallback == "tcp_listeners=checked" {
+			return "tcp_listeners=none"
+		}
+		return fallback
+	}
+	return "tcp_listeners=" + joinEvidence(endpointEvidence(endpoints), 10)
 }
 
 func ownerGroup(info fs.FileInfo) (string, string) {
@@ -1139,9 +1231,12 @@ func ssTCPEndpoints(ctx checks.Context) ([]tcpEndpoint, string) {
 	if err != nil {
 		return nil, "ss=unavailable"
 	}
+	return parseSSTCPEndpoints(string(output)), "ss=checked"
+}
 
+func parseSSTCPEndpoints(output string) []tcpEndpoint {
 	endpoints := []tcpEndpoint{}
-	for _, line := range strings.Split(string(output), "\n") {
+	for _, line := range strings.Split(output, "\n") {
 		lower := strings.ToLower(line)
 		if !strings.Contains(lower, "docker") && !strings.Contains(line, ":2375") && !strings.Contains(line, ":2376") {
 			continue
@@ -1162,7 +1257,7 @@ func ssTCPEndpoints(ctx checks.Context) ([]tcpEndpoint, string) {
 			})
 		}
 	}
-	return endpoints, "ss=checked"
+	return endpoints
 }
 
 func daemonConfigTCPEndpoints(path string) ([]tcpEndpoint, string) {

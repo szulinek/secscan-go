@@ -3,6 +3,7 @@ package docker
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"net"
 	"os"
 	"os/exec"
@@ -82,7 +83,7 @@ func TestVersionCheckParsesDockerVersionJSON(t *testing.T) {
 	}
 }
 
-func TestSocketPermissions(t *testing.T) {
+func TestSocketPermissionsStandardDockerGroupPasses(t *testing.T) {
 	paths := withDockerFixture(t)
 	shortDir, err := os.MkdirTemp("", "dockersock")
 	if err != nil {
@@ -93,39 +94,100 @@ func TestSocketPermissions(t *testing.T) {
 	})
 	paths.socket = filepath.Join(shortDir, "docker.sock")
 	dockerSocketPath = paths.socket
-	if err := os.MkdirAll(filepath.Dir(paths.socket), 0755); err != nil {
-		t.Fatalf("create socket dir: %v", err)
-	}
-	listener, err := net.Listen("unix", paths.socket)
-	if err != nil {
-		t.Fatalf("listen unix socket: %v", err)
-	}
+	dockerSocketPaths = []string{paths.socket}
+	listener := createUnixSocket(t, paths.socket)
 	defer listener.Close()
-
-	cases := []struct {
-		name   string
-		mode   os.FileMode
-		status checks.Status
-	}{
-		{name: "private", mode: 0600, status: checks.StatusPass},
-		{name: "group writable", mode: 0620, status: checks.StatusWarn},
-		{name: "world writable", mode: 0666, status: checks.StatusFail},
+	mockSocketOwnerGroup(t, "root(0)", "docker(999)")
+	if err := os.Chmod(paths.socket, 0660); err != nil {
+		t.Fatalf("chmod socket: %v", err)
 	}
 
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if err := os.Chmod(paths.socket, tc.mode); err != nil {
-				t.Fatalf("chmod socket: %v", err)
-			}
-			result := checkSocketPermissions{}.Run(dockerContext(&mockRunner{}))
-			assertCompleteResult(t, result)
-			if result.Status != tc.status {
-				t.Fatalf("expected %s, got %s (%s)", tc.status, result.Status, result.Evidence)
-			}
-			if !strings.Contains(result.Evidence, fmt.Sprintf("mode=%04o", tc.mode)) {
-				t.Fatalf("expected mode evidence, got %s", result.Evidence)
-			}
-		})
+	result := checkSocketPermissions{}.Run(dockerContext(&mockRunner{outputs: map[string]string{
+		"ss -lntp": "",
+	}}))
+	assertCompleteResult(t, result)
+	if result.Status != checks.StatusPass || result.Severity != checks.SeverityLow {
+		t.Fatalf("expected low pass, got %s/%s (%s)", result.Status, result.Severity, result.Evidence)
+	}
+	if !strings.Contains(result.Evidence, "mode=0660") || !strings.Contains(result.Evidence, "tcp_listeners=none") {
+		t.Fatalf("expected socket mode and TCP evidence, got %s", result.Evidence)
+	}
+	if !strings.Contains(result.AdminDetails, "Members of docker group effectively have root-equivalent access.") {
+		t.Fatalf("expected docker group admin note, got %s", result.AdminDetails)
+	}
+}
+
+func TestSocketPermissionsWorldWritableWarnsHigh(t *testing.T) {
+	withDockerFixture(t)
+	socketPath := shortSocketPath(t, "docker.sock")
+	dockerSocketPath = socketPath
+	dockerSocketPaths = []string{socketPath}
+	listener := createUnixSocket(t, socketPath)
+	defer listener.Close()
+	mockSocketOwnerGroup(t, "root(0)", "docker(999)")
+	if err := os.Chmod(socketPath, 0666); err != nil {
+		t.Fatalf("chmod socket: %v", err)
+	}
+
+	result := checkSocketPermissions{}.Run(dockerContext(&mockRunner{outputs: map[string]string{
+		"ss -lntp": "",
+	}}))
+	assertCompleteResult(t, result)
+	if result.Status != checks.StatusWarn || result.Severity != checks.SeverityHigh {
+		t.Fatalf("expected high warn, got %s/%s (%s)", result.Status, result.Severity, result.Evidence)
+	}
+	if !strings.Contains(result.Evidence, "mode=0666") {
+		t.Fatalf("expected mode evidence, got %s", result.Evidence)
+	}
+}
+
+func TestSocketPermissionsFailsOnPublicDockerTCPAPI(t *testing.T) {
+	withDockerFixture(t)
+	socketPath := shortSocketPath(t, "docker.sock")
+	dockerSocketPath = socketPath
+	dockerSocketPaths = []string{socketPath}
+	listener := createUnixSocket(t, socketPath)
+	defer listener.Close()
+	mockSocketOwnerGroup(t, "root(0)", "docker(999)")
+	if err := os.Chmod(socketPath, 0660); err != nil {
+		t.Fatalf("chmod socket: %v", err)
+	}
+
+	result := checkSocketPermissions{}.Run(dockerContext(&mockRunner{outputs: map[string]string{
+		"ss -lntp": "Netid State Recv-Q Send-Q Local Address:Port Peer Address:Port Process\n" +
+			"tcp LISTEN 0 4096 0.0.0.0:2376 0.0.0.0:* users:((\"dockerd\",pid=100,fd=3))\n",
+	}}))
+	assertCompleteResult(t, result)
+	if result.Status != checks.StatusFail || result.Severity != checks.SeverityHigh {
+		t.Fatalf("expected high fail, got %s/%s (%s)", result.Status, result.Severity, result.Evidence)
+	}
+	if !strings.Contains(result.Evidence, "tcp://0.0.0.0:2376") {
+		t.Fatalf("expected TCP listener evidence, got %s", result.Evidence)
+	}
+}
+
+func TestSocketPermissionsWarnsOnCustomSocketPath(t *testing.T) {
+	withDockerFixture(t)
+	expectedPath := shortSocketPath(t, "expected.sock")
+	customPath := shortSocketPath(t, "custom.sock")
+	dockerSocketPaths = []string{expectedPath}
+	dockerSocketPath = customPath
+	listener := createUnixSocket(t, customPath)
+	defer listener.Close()
+	mockSocketOwnerGroup(t, "root(0)", "docker(999)")
+	if err := os.Chmod(customPath, 0660); err != nil {
+		t.Fatalf("chmod socket: %v", err)
+	}
+
+	result := checkSocketPermissions{}.Run(dockerContext(&mockRunner{outputs: map[string]string{
+		"ss -lntp": "",
+	}}))
+	assertCompleteResult(t, result)
+	if result.Status != checks.StatusWarn || result.Severity != checks.SeverityHigh {
+		t.Fatalf("expected high warn, got %s/%s (%s)", result.Status, result.Severity, result.Evidence)
+	}
+	if !strings.Contains(result.Evidence, "path="+customPath) {
+		t.Fatalf("expected custom path evidence, got %s", result.Evidence)
 	}
 }
 
@@ -387,6 +449,8 @@ func withDockerFixture(t *testing.T) dockerFixturePaths {
 	originalContainersPath := dockerContainersPath
 	originalDaemonConfigPath := dockerDaemonConfigPath
 	originalBinaryPaths := dockerBinaryPaths
+	originalSocketPaths := dockerSocketPaths
+	originalOwnerGroupLookup := ownerGroupLookup
 	originalLookPath := lookPath
 	dockerSocketPath = paths.socket
 	dockerDataPath = paths.data
@@ -394,6 +458,7 @@ func withDockerFixture(t *testing.T) dockerFixturePaths {
 	dockerContainersPath = paths.containers
 	dockerDaemonConfigPath = paths.daemonJSON
 	dockerBinaryPaths = []string{paths.binary}
+	dockerSocketPaths = []string{paths.socket}
 	lookPath = func(name string) (string, error) {
 		return "", exec.ErrNotFound
 	}
@@ -404,10 +469,47 @@ func withDockerFixture(t *testing.T) dockerFixturePaths {
 		dockerContainersPath = originalContainersPath
 		dockerDaemonConfigPath = originalDaemonConfigPath
 		dockerBinaryPaths = originalBinaryPaths
+		dockerSocketPaths = originalSocketPaths
+		ownerGroupLookup = originalOwnerGroupLookup
 		lookPath = originalLookPath
 	})
 
 	return paths
+}
+
+func createUnixSocket(t *testing.T, path string) net.Listener {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatalf("create socket dir: %v", err)
+	}
+	listener, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatalf("listen unix socket: %v", err)
+	}
+	return listener
+}
+
+func shortSocketPath(t *testing.T, name string) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "dockersock")
+	if err != nil {
+		t.Fatalf("create short socket dir: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.RemoveAll(dir)
+	})
+	return filepath.Join(dir, name)
+}
+
+func mockSocketOwnerGroup(t *testing.T, owner, group string) {
+	t.Helper()
+	previous := ownerGroupLookup
+	ownerGroupLookup = func(fs.FileInfo) (string, string) {
+		return owner, group
+	}
+	t.Cleanup(func() {
+		ownerGroupLookup = previous
+	})
 }
 
 func writeFile(t *testing.T, path, content string) {
