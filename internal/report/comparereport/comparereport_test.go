@@ -100,7 +100,7 @@ func TestRenderIncludesCompareSections(t *testing.T) {
 	}
 
 	output := html.String()
-	for _, expected := range []string{"Score trend", "Module trend", "New findings", "Resolved findings", "Changed findings"} {
+	for _, expected := range []string{"LH.pl Security Audit", "85/100", "class=\"badge high\">high", "Score trend", "Module trend", "New findings", "Resolved findings", "Changed findings"} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("expected HTML to contain %q", expected)
 		}

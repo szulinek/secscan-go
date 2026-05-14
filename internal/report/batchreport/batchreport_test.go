@@ -48,11 +48,14 @@ func TestRenderBatchReportIncludesHostTableAndRisks(t *testing.T) {
 	html := out.String()
 	for _, needle := range []string{
 		"Security Audit Batch Report",
+		"LH.pl Security Audit",
+		"85/100",
 		"Host Summary",
 		"Host Sections",
 		"host-a",
 		"192.0.2.10",
 		"PermitRootLogin is enabled",
+		"class=\"badge high\">high",
 		"Module summary",
 	} {
 		if !strings.Contains(html, needle) {

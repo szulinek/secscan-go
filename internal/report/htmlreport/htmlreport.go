@@ -186,19 +186,21 @@ var pageTemplate = template.Must(template.New("report").Funcs(template.FuncMap{
   <style>
     :root {
       color-scheme: light;
-      --bg: #f8fafc;
+      --primary: #003C7E;
+      --secondary: #00AEEF;
+      --bg: #F5F7FA;
       --ink: #111827;
       --muted: #667085;
-      --line: #e5e7eb;
-      --panel: #ffffff;
-      --soft: #f3f4f6;
-      --critical: #dc2626;
-      --high: #ea580c;
-      --medium: #f59e0b;
-      --low: #2563eb;
-      --pass: #16a34a;
-      --warn: #f59e0b;
-      --shadow: 0 12px 30px rgba(15, 23, 42, 0.08);
+      --line: #E5E7EB;
+      --panel: #FFFFFF;
+      --soft: #EEF6FC;
+      --critical: #DC2626;
+      --high: #DC2626;
+      --medium: #F59E0B;
+      --low: #00AEEF;
+      --pass: #16A34A;
+      --warn: #F59E0B;
+      --shadow: 0 14px 34px rgba(0, 60, 126, 0.10);
     }
     * { box-sizing: border-box; }
     body {
@@ -208,35 +210,41 @@ var pageTemplate = template.Must(template.New("report").Funcs(template.FuncMap{
       color: var(--ink);
       line-height: 1.5;
     }
-    .page { max-width: 1120px; margin: 0 auto; padding: 40px 24px 64px; }
+    .page { max-width: 1140px; margin: 0 auto; padding: 40px 24px 64px; }
     .cover {
-      min-height: 520px;
+      min-height: 540px;
       display: grid;
       align-content: space-between;
       gap: 44px;
-      padding: 44px;
+      padding: 46px;
       background: var(--panel);
       border: 1px solid var(--line);
       border-radius: 8px;
       box-shadow: var(--shadow);
       page-break-after: always;
+      position: relative;
+      overflow: hidden;
     }
+    .cover:before { content: ""; position: absolute; left: 0; top: 0; right: 0; height: 8px; background: var(--primary); }
     .cover-top { display: flex; justify-content: space-between; gap: 24px; align-items: flex-start; }
+    .brand-row { display: flex; align-items: center; gap: 12px; margin-bottom: 22px; }
+    .brand-mark { display: inline-flex; align-items: center; justify-content: center; min-width: 64px; min-height: 34px; padding: 5px 12px; border-radius: 8px; background: var(--primary); color: #fff; font-size: 18px; font-weight: 900; letter-spacing: 0; }
+    .brand-copy { color: var(--primary); font-size: 12px; font-weight: 800; text-transform: uppercase; }
     .eyebrow {
-      color: #475467;
+      color: var(--primary);
       font-size: 12px;
       text-transform: uppercase;
       letter-spacing: 0;
       font-weight: 700;
       margin-bottom: 14px;
     }
-    h1 { font-size: 52px; line-height: 1.02; margin: 0; letter-spacing: 0; }
-    h2 { font-size: 24px; margin: 34px 0 16px; letter-spacing: 0; }
+    h1 { font-size: 52px; line-height: 1.02; margin: 0; letter-spacing: 0; color: var(--primary); }
+    h2 { font-size: 24px; margin: 36px 0 16px; letter-spacing: 0; color: var(--primary); }
     h3 { font-size: 17px; margin: 0; letter-spacing: 0; }
     p { margin: 10px 0 0; }
     .muted { color: var(--muted); }
     .meta-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-top: 34px; }
-    .meta-item { padding: 14px 16px; background: var(--soft); border-radius: 8px; border: 1px solid var(--line); }
+    .meta-item { padding: 15px 16px; background: var(--soft); border-radius: 8px; border: 1px solid #d8e9f7; }
     .meta-item span { display: block; color: var(--muted); font-size: 12px; font-weight: 700; text-transform: uppercase; }
     .meta-item strong { display: block; margin-top: 3px; font-size: 15px; overflow-wrap: anywhere; }
     .score-panel { display: flex; align-items: center; gap: 20px; justify-content: flex-end; }
@@ -251,12 +259,13 @@ var pageTemplate = template.Must(template.New("report").Funcs(template.FuncMap{
       font-size: 38px;
       font-weight: 800;
       box-shadow: inset 0 0 0 1px rgba(17, 24, 39, 0.06);
+      color: var(--primary);
     }
     .score.good { border-color: var(--pass); }
     .score.warn { border-color: var(--warn); }
     .score.bad { border-color: var(--critical); }
     .score-copy strong { display: block; font-size: 20px; }
-    .risk-grade { display: inline-flex; align-items: center; min-height: 30px; margin-top: 8px; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--line); background: #fff; color: #344054; font-size: 13px; font-weight: 800; }
+    .risk-grade { display: inline-flex; align-items: center; min-height: 30px; margin-top: 8px; padding: 4px 10px; border-radius: 999px; border: 1px solid #b8def6; background: #eff8ff; color: var(--primary); font-size: 13px; font-weight: 800; }
     .section { margin-top: 34px; }
     .summary {
       display: grid;
@@ -269,6 +278,7 @@ var pageTemplate = template.Must(template.New("report").Funcs(template.FuncMap{
       border: 1px solid var(--line);
       border-radius: 8px;
       box-shadow: var(--shadow);
+      break-inside: avoid;
     }
     .summary-copy { padding: 20px; }
     .summary-copy p { font-size: 17px; margin: 0; }
@@ -280,14 +290,14 @@ var pageTemplate = template.Must(template.New("report").Funcs(template.FuncMap{
     .stat span { display: block; color: var(--muted); font-size: 12px; font-weight: 700; text-transform: uppercase; }
     .stat strong { display: block; margin-top: 4px; font-size: 34px; line-height: 1; }
     .risk-list { display: grid; gap: 14px; }
-    .risk-card { padding: 18px; border-left: 5px solid var(--low); page-break-inside: avoid; }
+    .risk-card { padding: 18px; border-left: 5px solid var(--low); page-break-inside: avoid; break-inside: avoid; }
     .risk-card.sev-critical { border-left-color: var(--critical); }
     .risk-card.sev-high { border-left-color: var(--high); }
     .risk-card.sev-medium { border-left-color: var(--medium); }
     .risk-card.sev-low { border-left-color: var(--low); }
     .risk-head, .module-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
     .risk-body { margin-top: 8px; max-width: 820px; }
-    .recommendation { margin-top: 12px; padding: 12px 14px; background: #f8fafc; border: 1px solid var(--line); border-radius: 8px; }
+    .recommendation { margin-top: 12px; padding: 12px 14px; background: #f5fbff; border: 1px solid #d8e9f7; border-radius: 8px; }
     .port-summary { margin-top: 12px; padding: 12px 14px; background: #fff; border: 1px solid var(--line); border-radius: 8px; }
     .port-summary-label { color: #344054; font-size: 12px; font-weight: 800; text-transform: uppercase; }
     .port-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
@@ -297,10 +307,10 @@ var pageTemplate = template.Must(template.New("report").Funcs(template.FuncMap{
       gap: 7px;
       max-width: 100%;
       padding: 6px 9px;
-      border: 1px solid #bfdbfe;
+      border: 1px solid #b8def6;
       border-radius: 999px;
-      background: #eff6ff;
-      color: #1e3a8a;
+      background: #eff8ff;
+      color: var(--primary);
       font-size: 12px;
       font-weight: 700;
       white-space: nowrap;
@@ -330,13 +340,13 @@ var pageTemplate = template.Must(template.New("report").Funcs(template.FuncMap{
       white-space: nowrap;
     }
     .badge.critical { color: var(--critical); background: #fef2f2; border-color: #fecaca; }
-    .badge.high { color: var(--high); background: #fff7ed; border-color: #fed7aa; }
+    .badge.high { color: var(--high); background: #fef2f2; border-color: #fecaca; }
     .badge.medium, .badge.warn { color: #b45309; background: #fffbeb; border-color: #fde68a; }
-    .badge.low { color: var(--low); background: #eff6ff; border-color: #bfdbfe; }
+    .badge.low { color: var(--primary); background: #eff8ff; border-color: #b8def6; }
     .badge.pass { color: var(--pass); background: #f0fdf4; border-color: #bbf7d0; }
     .badge.fail, .badge.error { color: var(--critical); background: #fef2f2; border-color: #fecaca; }
     .modules { display: grid; gap: 16px; }
-    .module { padding: 18px; page-break-inside: avoid; }
+    .module { padding: 18px; page-break-inside: avoid; break-inside: avoid; }
     .module-id { margin-top: 2px; font-size: 13px; color: var(--muted); }
     .module-findings { display: grid; gap: 12px; margin-top: 14px; }
     details {
@@ -356,7 +366,7 @@ var pageTemplate = template.Must(template.New("report").Funcs(template.FuncMap{
       margin: 4px 0 0;
       padding: 10px;
       border-radius: 8px;
-      background: #0f172a;
+      background: #0b2f5f;
       color: #e5e7eb;
       white-space: pre-wrap;
       overflow-wrap: anywhere;
@@ -373,7 +383,7 @@ var pageTemplate = template.Must(template.New("report").Funcs(template.FuncMap{
       body { background: #fff; }
       .page { padding: 0; max-width: none; }
       .cover, .summary-copy, .stat, .risk-card, .module, .inventory-card { box-shadow: none; }
-      details { break-inside: avoid; }
+      .cover, .summary-copy, .stat, .risk-card, .module, .inventory-card, details { break-inside: avoid; page-break-inside: avoid; }
     }
     @media (max-width: 820px) {
       .page { padding: 24px 14px 42px; }
@@ -392,8 +402,13 @@ var pageTemplate = template.Must(template.New("report").Funcs(template.FuncMap{
     <section class="cover">
       <div class="cover-top">
         <div>
-          <div class="eyebrow">LH.pl hosting security audit · {{ upper .ReportType }}</div>
-          <h1>{{ .Title }}</h1>
+          <div class="brand-row">
+            <div class="brand-mark">LH.pl</div>
+            <div class="brand-copy">Security Audit</div>
+          </div>
+          <div class="eyebrow">{{ upper .ReportType }} report</div>
+          <h1>LH.pl Security Audit</h1>
+          <p class="muted">{{ .Title }}</p>
         </div>
         <div class="score-panel">
           <div class="score {{ scoreClass .Score }}">{{ .Score }}/100</div>

@@ -148,26 +148,32 @@ var pageTemplate = template.Must(template.New("batch-report").Funcs(template.Fun
   <title>{{ .Title }}</title>
   <style>
     :root {
-      --bg: #f8fafc;
+      --primary: #003C7E;
+      --secondary: #00AEEF;
+      --bg: #F5F7FA;
       --ink: #111827;
       --muted: #667085;
-      --line: #e5e7eb;
-      --panel: #ffffff;
-      --critical: #dc2626;
-      --high: #ea580c;
-      --medium: #f59e0b;
-      --low: #2563eb;
-      --pass: #16a34a;
-      --shadow: 0 12px 30px rgba(15, 23, 42, 0.08);
+      --line: #E5E7EB;
+      --panel: #FFFFFF;
+      --critical: #DC2626;
+      --high: #DC2626;
+      --medium: #F59E0B;
+      --low: #00AEEF;
+      --pass: #16A34A;
+      --shadow: 0 14px 34px rgba(0, 60, 126, 0.10);
     }
     * { box-sizing: border-box; }
     body { margin: 0; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--bg); color: var(--ink); line-height: 1.5; }
-    .page { max-width: 1160px; margin: 0 auto; padding: 40px 24px 64px; }
+    .page { max-width: 1180px; margin: 0 auto; padding: 40px 24px 64px; }
     .cover, .card, .host { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow); }
-    .cover { padding: 44px; min-height: 420px; display: grid; align-content: space-between; page-break-after: always; }
-    .eyebrow { color: #475467; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0; }
-    h1 { margin: 10px 0 0; font-size: 50px; line-height: 1.05; letter-spacing: 0; }
-    h2 { margin: 34px 0 16px; font-size: 24px; letter-spacing: 0; }
+    .cover { padding: 44px; min-height: 440px; display: grid; align-content: space-between; page-break-after: always; position: relative; overflow: hidden; }
+    .cover:before { content: ""; position: absolute; left: 0; top: 0; right: 0; height: 8px; background: var(--primary); }
+    .brand-row { display: flex; align-items: center; gap: 12px; margin-bottom: 22px; }
+    .brand-mark { display: inline-flex; align-items: center; justify-content: center; min-width: 64px; min-height: 34px; padding: 5px 12px; border-radius: 8px; background: var(--primary); color: #fff; font-size: 18px; font-weight: 900; letter-spacing: 0; }
+    .brand-copy { color: var(--primary); font-size: 12px; font-weight: 800; text-transform: uppercase; }
+    .eyebrow { color: var(--primary); font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0; }
+    h1 { margin: 10px 0 0; font-size: 50px; line-height: 1.05; letter-spacing: 0; color: var(--primary); }
+    h2 { margin: 36px 0 16px; font-size: 24px; letter-spacing: 0; color: var(--primary); }
     h3 { margin: 0; font-size: 18px; letter-spacing: 0; }
     p { margin: 8px 0 0; }
     .muted { color: var(--muted); }
@@ -175,17 +181,17 @@ var pageTemplate = template.Must(template.New("batch-report").Funcs(template.Fun
     .score.warn { background: var(--medium); }
     .score.bad { background: var(--critical); }
     .summary { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 14px; margin-top: 30px; }
-    .card { padding: 18px; }
+    .card { padding: 18px; break-inside: avoid; page-break-inside: avoid; }
     .card span { display: block; color: var(--muted); font-size: 12px; font-weight: 700; text-transform: uppercase; }
     .card strong { display: block; margin-top: 4px; font-size: 32px; line-height: 1; }
     .table { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; box-shadow: var(--shadow); }
     .table th, .table td { padding: 11px 12px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; font-size: 14px; }
     .table th { color: var(--muted); font-size: 12px; text-transform: uppercase; }
     .hosts { display: grid; gap: 18px; }
-    .host { padding: 20px; page-break-inside: avoid; }
+    .host { padding: 20px; page-break-inside: avoid; break-inside: avoid; }
     .host-head { display: flex; justify-content: space-between; gap: 18px; align-items: flex-start; }
     .risk-list { display: grid; gap: 10px; margin-top: 14px; }
-    .risk { border: 1px solid var(--line); border-left: 5px solid var(--low); border-radius: 8px; padding: 12px 14px; background: #fff; }
+    .risk { border: 1px solid var(--line); border-left: 5px solid var(--low); border-radius: 8px; padding: 12px 14px; background: #fff; break-inside: avoid; page-break-inside: avoid; }
     .risk.critical { border-left-color: var(--critical); }
     .risk.high { border-left-color: var(--high); }
     .risk.medium { border-left-color: var(--medium); }
@@ -193,15 +199,16 @@ var pageTemplate = template.Must(template.New("batch-report").Funcs(template.Fun
     .badges { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 10px; }
     .badge { display: inline-flex; align-items: center; min-height: 24px; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--line); color: #344054; background: #fff; font-size: 12px; font-weight: 700; white-space: nowrap; }
     .badge.critical { color: var(--critical); background: #fef2f2; border-color: #fecaca; }
-    .badge.high { color: var(--high); background: #fff7ed; border-color: #fed7aa; }
+    .badge.high { color: var(--high); background: #fef2f2; border-color: #fecaca; }
     .badge.medium { color: #b45309; background: #fffbeb; border-color: #fde68a; }
-    .badge.low { color: var(--low); background: #eff6ff; border-color: #bfdbfe; }
+    .badge.low { color: var(--primary); background: #eff8ff; border-color: #b8def6; }
     .modules { margin-top: 14px; }
     .empty { color: var(--muted); margin-top: 12px; }
     @media print {
       body { background: #fff; }
       .page { padding: 0; max-width: none; }
       .cover, .card, .host, .table { box-shadow: none; }
+      .cover, .card, .host, .risk, .table { break-inside: avoid; page-break-inside: avoid; }
     }
     @media (max-width: 840px) {
       .page { padding: 24px 14px 42px; }
@@ -216,8 +223,13 @@ var pageTemplate = template.Must(template.New("batch-report").Funcs(template.Fun
   <main class="page">
     <section class="cover">
       <div>
-        <div class="eyebrow">LH.pl hosting security audit · {{ upper .ReportType }} · batch</div>
-        <h1>{{ .Title }}</h1>
+        <div class="brand-row">
+          <div class="brand-mark">LH.pl</div>
+          <div class="brand-copy">Security Audit</div>
+        </div>
+        <div class="eyebrow">{{ upper .ReportType }} batch report</div>
+        <h1>LH.pl Security Audit</h1>
+        <p class="muted">{{ .Title }}</p>
       </div>
       <div class="summary">
         <div class="card"><span>Hosts</span><strong>{{ .HostCount }}</strong></div>

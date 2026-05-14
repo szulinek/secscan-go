@@ -14,6 +14,8 @@ func TestClientReportHidesInventoryAndInfo(t *testing.T) {
 	html := renderTestReport(t, TypeClient)
 
 	mustContain(t, html, "Security Audit Report")
+	mustContain(t, html, "LH.pl Security Audit")
+	mustContain(t, html, "74/100")
 	mustContain(t, html, "Executive Summary")
 	mustContain(t, html, "Top Risks")
 	mustContain(t, html, "server1.example.com / 198.51.100.25")
@@ -21,6 +23,7 @@ func TestClientReportHidesInventoryAndInfo(t *testing.T) {
 	mustContain(t, html, "needs improvement")
 	mustNotContain(t, html, "server1.example.com / 10.0.0.20")
 	mustContain(t, html, "PermitRootLogin is enabled")
+	mustContain(t, html, "class=\"badge high\">high")
 	mustContain(t, html, "Disable direct root SSH login.")
 	mustContain(t, html, "Technical details")
 	mustContain(t, html, "Remediation steps")

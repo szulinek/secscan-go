@@ -318,46 +318,56 @@ var pageTemplate = template.Must(template.New("compare").Funcs(template.FuncMap{
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Security Audit Comparison</title>
   <style>
-    :root { color-scheme: light; --bg: #f8fafc; --ink: #111827; --muted: #667085; --line: #e5e7eb; --panel: #fff; --green: #16a34a; --red: #dc2626; --yellow: #f59e0b; --blue: #2563eb; --shadow: 0 10px 24px rgba(15, 23, 42, .07); }
+    :root { color-scheme: light; --primary: #003C7E; --secondary: #00AEEF; --bg: #F5F7FA; --ink: #111827; --muted: #667085; --line: #E5E7EB; --panel: #FFFFFF; --green: #16A34A; --red: #DC2626; --yellow: #F59E0B; --blue: #00AEEF; --shadow: 0 14px 34px rgba(0, 60, 126, .10); }
     * { box-sizing: border-box; }
     body { margin: 0; background: var(--bg); color: var(--ink); font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; line-height: 1.5; }
-    .page { max-width: 1120px; margin: 0 auto; padding: 40px 24px 64px; }
+    .page { max-width: 1140px; margin: 0 auto; padding: 40px 24px 64px; }
     .cover, .panel, .finding { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow); }
-    .cover { padding: 40px; margin-bottom: 28px; }
-    .eyebrow { color: #475467; font-size: 12px; text-transform: uppercase; font-weight: 800; }
-    h1 { margin: 10px 0 8px; font-size: 46px; line-height: 1.05; letter-spacing: 0; }
-    h2 { margin: 34px 0 14px; font-size: 24px; letter-spacing: 0; }
+    .cover { padding: 44px; margin-bottom: 28px; position: relative; overflow: hidden; page-break-after: always; }
+    .cover:before { content: ""; position: absolute; left: 0; top: 0; right: 0; height: 8px; background: var(--primary); }
+    .brand-row { display: flex; align-items: center; gap: 12px; margin-bottom: 22px; }
+    .brand-mark { display: inline-flex; align-items: center; justify-content: center; min-width: 64px; min-height: 34px; padding: 5px 12px; border-radius: 8px; background: var(--primary); color: #fff; font-size: 18px; font-weight: 900; letter-spacing: 0; }
+    .brand-copy { color: var(--primary); font-size: 12px; font-weight: 800; text-transform: uppercase; }
+    .eyebrow { color: var(--primary); font-size: 12px; text-transform: uppercase; font-weight: 800; }
+    h1 { margin: 10px 0 8px; font-size: 46px; line-height: 1.05; letter-spacing: 0; color: var(--primary); }
+    h2 { margin: 36px 0 14px; font-size: 24px; letter-spacing: 0; color: var(--primary); }
     h3 { margin: 0 0 8px; font-size: 17px; letter-spacing: 0; }
     p { margin: 6px 0 0; color: var(--muted); }
     .score-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-top: 28px; }
-    .score-box { border: 1px solid var(--line); border-radius: 8px; padding: 18px; background: #f9fafb; }
+    .score-box { border: 1px solid #d8e9f7; border-radius: 8px; padding: 18px; background: #f5fbff; break-inside: avoid; page-break-inside: avoid; }
     .score-box span { color: var(--muted); font-size: 12px; font-weight: 800; text-transform: uppercase; }
     .score-box strong { display: block; margin-top: 4px; font-size: 34px; }
     .delta-good { color: var(--green); } .delta-bad { color: var(--red); } .delta-flat { color: var(--muted); }
-    .panel { padding: 22px; margin-bottom: 18px; }
+    .panel { padding: 22px; margin-bottom: 18px; break-inside: avoid; page-break-inside: avoid; }
     table { width: 100%; border-collapse: collapse; font-size: 14px; }
     th, td { padding: 11px 10px; border-bottom: 1px solid var(--line); text-align: left; }
     th { color: var(--muted); font-size: 12px; text-transform: uppercase; }
     .findings { display: grid; gap: 14px; }
-    .finding { padding: 18px 20px; border-left-width: 6px; box-shadow: none; page-break-inside: avoid; }
+    .finding { padding: 18px 20px; border-left-width: 6px; box-shadow: none; page-break-inside: avoid; break-inside: avoid; }
     .finding.new { border-left-color: var(--red); background: #fff7f7; }
     .finding.resolved { border-left-color: var(--green); background: #f6fff9; }
     .finding.changed { border-left-color: var(--yellow); background: #fffbeb; }
     .badges { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
     .badge { display: inline-flex; align-items: center; min-height: 26px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--line); font-size: 12px; font-weight: 800; text-transform: uppercase; background: #fff; }
-    .critical, .high { color: var(--red); border-color: #fecaca; } .medium { color: #b45309; border-color: #fde68a; } .low { color: var(--blue); border-color: #bfdbfe; } .info { color: var(--muted); }
+    .critical, .high { color: var(--red); border-color: #fecaca; background: #fef2f2; } .medium { color: #b45309; border-color: #fde68a; background: #fffbeb; } .low { color: var(--primary); border-color: #b8def6; background: #eff8ff; } .info { color: var(--muted); }
     .empty { color: var(--muted); border: 1px dashed var(--line); border-radius: 8px; padding: 18px; background: #fff; }
     .diff { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 12px; }
     .diff-box { border: 1px solid var(--line); border-radius: 8px; padding: 12px; background: #fff; overflow-wrap: anywhere; }
     .diff-box span { display: block; color: var(--muted); font-size: 12px; font-weight: 800; text-transform: uppercase; margin-bottom: 4px; }
+    @media print { body { background: #fff; } .page { padding: 0; max-width: none; } .cover, .panel, .finding { box-shadow: none; } .cover, .panel, .finding, .score-box { break-inside: avoid; page-break-inside: avoid; } }
     @media (max-width: 760px) { .score-grid, .diff { grid-template-columns: 1fr; } h1 { font-size: 34px; } .cover { padding: 28px; } }
   </style>
 </head>
 <body>
   <main class="page">
     <section class="cover">
-      <div class="eyebrow">Security audit comparison</div>
-      <h1>Security Change Report</h1>
+      <div class="brand-row">
+        <div class="brand-mark">LH.pl</div>
+        <div class="brand-copy">Security Audit</div>
+      </div>
+      <div class="eyebrow">Comparison report</div>
+      <h1>LH.pl Security Audit</h1>
+      <p>Security Change Report</p>
       <p>{{ .Host }}</p>
       <div class="score-grid">
         <div class="score-box"><span>Previous score</span><strong>{{ .Compare.PreviousScore }}/100</strong></div>
