@@ -1,0 +1,5 @@
+cluster.name: secscan-public
+network.host: 0.0.0.0
+xpack.security.enabled: false
+xpack.security.http.ssl.enabled: false
+action.destructive_requires_name: false
