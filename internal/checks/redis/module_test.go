@@ -51,7 +51,7 @@ func TestVersionFromRedisServer(t *testing.T) {
 	if result.Status != checks.StatusInfo {
 		t.Fatalf("expected info, got %s", result.Status)
 	}
-	if !strings.Contains(result.Evidence, "version=7.2.4") {
+	if !strings.Contains(result.Evidence, "engine=redis") || !strings.Contains(result.Evidence, "version=7.2.4") {
 		t.Fatalf("unexpected evidence: %s", result.Evidence)
 	}
 }
@@ -77,6 +77,22 @@ func TestVersionFallbackToRedisCLIInfo(t *testing.T) {
 	}
 }
 
+func TestVersionFromValkeyServer(t *testing.T) {
+	withValkeyFixture(t, secureRedisConfig())
+	runner := &mockRunner{outputs: map[string]string{
+		"valkey-server --version": "Valkey server v=8.0.1 sha=00000000:0 malloc=libc bits=64 build=local\n",
+	}}
+
+	result := checkVersion{}.Run(valkeyContext(runner))
+	assertCompleteResult(t, result)
+	if result.Status != checks.StatusInfo {
+		t.Fatalf("expected info, got %s", result.Status)
+	}
+	if !strings.Contains(result.Evidence, "engine=valkey") || !strings.Contains(result.Evidence, "version=8.0.1") || !strings.Contains(result.Evidence, "source=valkey-server") {
+		t.Fatalf("unexpected evidence: %s", result.Evidence)
+	}
+}
+
 func TestVersionCommandError(t *testing.T) {
 	withRedisFixture(t, secureRedisConfig())
 	runner := &mockRunner{errors: map[string]error{
@@ -89,7 +105,7 @@ func TestVersionCommandError(t *testing.T) {
 	if result.Status != checks.StatusError {
 		t.Fatalf("expected error, got %s", result.Status)
 	}
-	if !strings.Contains(result.Evidence, "command_error=true") {
+	if !strings.Contains(result.Evidence, "engine=redis") || !strings.Contains(result.Evidence, "command_error=true") {
 		t.Fatalf("unexpected evidence: %s", result.Evidence)
 	}
 }
@@ -162,7 +178,7 @@ func TestProtectedModeOffWarns(t *testing.T) {
 	if result.Status != checks.StatusWarn || result.Severity != checks.SeverityHigh {
 		t.Fatalf("expected high warn, got %s/%s", result.Status, result.Severity)
 	}
-	if result.Evidence != "protected-mode=no" {
+	if result.Evidence != "engine=redis; protected-mode=no" {
 		t.Fatalf("unexpected evidence: %s", result.Evidence)
 	}
 }
@@ -181,7 +197,7 @@ func TestMaxMemoryUnsetWarns(t *testing.T) {
 	if result.Status != checks.StatusWarn || result.Severity != checks.SeverityMedium {
 		t.Fatalf("expected medium warn, got %s/%s", result.Status, result.Severity)
 	}
-	if result.Evidence != "maxmemory=0" {
+	if result.Evidence != "engine=redis; maxmemory=0" {
 		t.Fatalf("unexpected evidence: %s", result.Evidence)
 	}
 }
@@ -219,7 +235,7 @@ func TestAuthenticationMissingPublicBindIsCritical(t *testing.T) {
 	if result.Status != checks.StatusWarn || result.Severity != checks.SeverityCritical {
 		t.Fatalf("expected critical warn, got %s/%s", result.Status, result.Severity)
 	}
-	if result.Evidence != "requirepass=not_set; acl=disabled" {
+	if result.Evidence != "engine=redis; requirepass=not_set; acl=disabled" {
 		t.Fatalf("unexpected evidence: %s", result.Evidence)
 	}
 }
@@ -238,11 +254,60 @@ func TestAuthenticationPassesWithACLEnabled(t *testing.T) {
 	if result.Status != checks.StatusPass {
 		t.Fatalf("expected pass, got %s", result.Status)
 	}
-	if result.Evidence != "requirepass=not_set; acl=enabled" {
+	if result.Evidence != "engine=redis; requirepass=not_set; acl=enabled" {
 		t.Fatalf("unexpected evidence: %s", result.Evidence)
 	}
 	if strings.Contains(result.Evidence, "strong-secret") {
 		t.Fatalf("evidence must not expose secrets: %s", result.Evidence)
+	}
+}
+
+func TestValkeyConfigChecks(t *testing.T) {
+	withValkeyFixture(t, strings.Join([]string{
+		"bind 0.0.0.0",
+		"protected-mode yes",
+		"maxmemory 0",
+		"appendonly yes",
+	}, "\n"))
+	ctx := valkeyContext(&mockRunner{})
+
+	bind := checkBindLocalhost{cache: &configCache{}}.Run(ctx)
+	assertCompleteResult(t, bind)
+	if bind.Status != checks.StatusWarn || bind.Severity != checks.SeverityHigh {
+		t.Fatalf("expected high bind warn, got %s/%s", bind.Status, bind.Severity)
+	}
+	if !strings.Contains(bind.Evidence, "engine=valkey") || !strings.Contains(bind.Evidence, "bind=0.0.0.0") {
+		t.Fatalf("unexpected bind evidence: %s", bind.Evidence)
+	}
+	if !strings.Contains(bind.AdminDetails, "/etc/valkey/valkey.conf") {
+		t.Fatalf("expected valkey config path in admin details: %s", bind.AdminDetails)
+	}
+
+	auth := checkAuthentication{cache: &configCache{}}.Run(ctx)
+	assertCompleteResult(t, auth)
+	if auth.Status != checks.StatusWarn || auth.Severity != checks.SeverityCritical {
+		t.Fatalf("expected critical auth warn, got %s/%s", auth.Status, auth.Severity)
+	}
+	if auth.Evidence != "engine=valkey; requirepass=not_set; acl=disabled" {
+		t.Fatalf("unexpected auth evidence: %s", auth.Evidence)
+	}
+
+	protected := checkProtectedMode{cache: &configCache{}}.Run(ctx)
+	assertCompleteResult(t, protected)
+	if protected.Status != checks.StatusPass {
+		t.Fatalf("expected protected-mode pass, got %s (%s)", protected.Status, protected.Evidence)
+	}
+	if protected.Evidence != "engine=valkey; protected-mode=yes" {
+		t.Fatalf("unexpected protected-mode evidence: %s", protected.Evidence)
+	}
+
+	maxMemory := checkMaxMemory{cache: &configCache{}}.Run(ctx)
+	assertCompleteResult(t, maxMemory)
+	if maxMemory.Status != checks.StatusWarn || maxMemory.Severity != checks.SeverityMedium {
+		t.Fatalf("expected medium maxmemory warn, got %s/%s", maxMemory.Status, maxMemory.Severity)
+	}
+	if maxMemory.Evidence != "engine=valkey; maxmemory=0" {
+		t.Fatalf("unexpected maxmemory evidence: %s", maxMemory.Evidence)
 	}
 }
 
@@ -269,13 +334,13 @@ func TestDetectionUsesProcessServiceCLIAndConfig(t *testing.T) {
 	ctx := checks.Context{Context: context.Background(), Host: system.Info{GOOS: "linux"}}
 
 	ctx.Services = []system.Service{{Unit: "redis.service"}}
-	if detected, evidence := detect(ctx); !detected || evidence != "running_service=redis.service" {
+	if detected, evidence := detect(ctx); !detected || evidence != "engine=redis; running_service=redis.service" {
 		t.Fatalf("expected service detection, got %v %q", detected, evidence)
 	}
 
 	ctx.Services = nil
 	ctx.Runner = &mockRunner{outputs: map[string]string{"pgrep -x redis-server": "1234\n"}}
-	if detected, evidence := detect(ctx); !detected || evidence != "process=redis-server" {
+	if detected, evidence := detect(ctx); !detected || evidence != "engine=redis; process=redis-server" {
 		t.Fatalf("expected process detection, got %v %q", detected, evidence)
 	}
 
@@ -285,7 +350,7 @@ func TestDetectionUsesProcessServiceCLIAndConfig(t *testing.T) {
 		return "/usr/bin/redis-cli", nil
 	}
 	ctx.Runner = &mockRunner{errors: map[string]error{"pgrep -x redis-server": fmt.Errorf("not found")}}
-	if detected, evidence := detect(ctx); !detected || evidence != "binary=/usr/bin/redis-cli" {
+	if detected, evidence := detect(ctx); !detected || evidence != "engine=redis; binary=/usr/bin/redis-cli" {
 		t.Fatalf("expected redis-cli detection, got %v %q", detected, evidence)
 	}
 
@@ -296,6 +361,21 @@ func TestDetectionUsesProcessServiceCLIAndConfig(t *testing.T) {
 	}
 }
 
+func TestDetectValkeyService(t *testing.T) {
+	withValkeyFixture(t, secureRedisConfig())
+	ctx := checks.Context{
+		Context: context.Background(),
+		Host:    system.Info{GOOS: "linux"},
+		Services: []system.Service{
+			{Unit: "valkey.service"},
+		},
+	}
+
+	if detected, evidence := detect(ctx); !detected || evidence != "engine=valkey; running_service=valkey.service" {
+		t.Fatalf("expected valkey service detection, got %v %q", detected, evidence)
+	}
+}
+
 func redisContext(runner *mockRunner) checks.Context {
 	return checks.Context{
 		Context: context.Background(),
@@ -303,6 +383,17 @@ func redisContext(runner *mockRunner) checks.Context {
 		Host:    system.Info{GOOS: "linux"},
 		Services: []system.Service{
 			{Unit: "redis.service"},
+		},
+	}
+}
+
+func valkeyContext(runner *mockRunner) checks.Context {
+	return checks.Context{
+		Context: context.Background(),
+		Runner:  runner,
+		Host:    system.Info{GOOS: "linux"},
+		Services: []system.Service{
+			{Unit: "valkey.service"},
 		},
 	}
 }
@@ -321,15 +412,56 @@ func withRedisFixture(t *testing.T, config string) redisFixturePaths {
 
 	originalConfigPaths := redisConfigPaths
 	originalBinaryPaths := redisBinaryPaths
+	originalValkeyConfigPaths := valkeyConfigPaths
+	originalValkeyBinaryPaths := valkeyBinaryPaths
 	originalLookPath := lookPath
 	redisConfigPaths = []string{paths.config}
 	redisBinaryPaths = []string{paths.binary}
+	valkeyConfigPaths = []string{filepath.Join(root, "etc", "valkey", "missing.conf")}
+	valkeyBinaryPaths = []string{filepath.Join(root, "usr", "bin", "missing-valkey-server")}
 	lookPath = func(name string) (string, error) {
 		return "", exec.ErrNotFound
 	}
 	t.Cleanup(func() {
 		redisConfigPaths = originalConfigPaths
 		redisBinaryPaths = originalBinaryPaths
+		valkeyConfigPaths = originalValkeyConfigPaths
+		valkeyBinaryPaths = originalValkeyBinaryPaths
+		lookPath = originalLookPath
+	})
+
+	return paths
+}
+
+func withValkeyFixture(t *testing.T, config string) redisFixturePaths {
+	t.Helper()
+
+	root := t.TempDir()
+	paths := redisFixturePaths{
+		root:   root,
+		config: filepath.Join(root, "etc", "valkey", "valkey.conf"),
+		binary: filepath.Join(root, "usr", "bin", "valkey-server"),
+	}
+	writeFile(t, paths.config, config)
+	writeFile(t, paths.binary, "#!/bin/sh\n")
+
+	originalConfigPaths := redisConfigPaths
+	originalBinaryPaths := redisBinaryPaths
+	originalValkeyConfigPaths := valkeyConfigPaths
+	originalValkeyBinaryPaths := valkeyBinaryPaths
+	originalLookPath := lookPath
+	redisConfigPaths = []string{filepath.Join(root, "etc", "redis", "missing.conf")}
+	redisBinaryPaths = []string{filepath.Join(root, "usr", "bin", "missing-redis-server")}
+	valkeyConfigPaths = []string{paths.config}
+	valkeyBinaryPaths = []string{paths.binary}
+	lookPath = func(name string) (string, error) {
+		return "", exec.ErrNotFound
+	}
+	t.Cleanup(func() {
+		redisConfigPaths = originalConfigPaths
+		redisBinaryPaths = originalBinaryPaths
+		valkeyConfigPaths = originalValkeyConfigPaths
+		valkeyBinaryPaths = originalValkeyBinaryPaths
 		lookPath = originalLookPath
 	})
 

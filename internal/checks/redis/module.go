@@ -15,19 +15,25 @@ import (
 
 const (
 	moduleID = "redis"
-	service  = "redis"
+	service  = "redis/valkey"
+
+	engineRedis  = "redis"
+	engineValkey = "valkey"
 )
 
 var (
-	redisConfigPaths = []string{"/etc/redis/redis.conf", "/etc/redis.conf"}
-	redisBinaryPaths = []string{"/usr/bin/redis-server", "/usr/local/bin/redis-server"}
-	lookPath         = exec.LookPath
+	redisConfigPaths  = []string{"/etc/redis/redis.conf", "/etc/redis.conf"}
+	valkeyConfigPaths = []string{"/etc/valkey/valkey.conf", "/etc/valkey.conf"}
+	redisBinaryPaths  = []string{"/usr/bin/redis-server", "/usr/local/bin/redis-server"}
+	valkeyBinaryPaths = []string{"/usr/bin/valkey-server", "/usr/local/bin/valkey-server"}
+	lookPath          = exec.LookPath
 )
 
 type Module struct{}
 
 type configCache struct {
 	loaded bool
+	engine string
 	path   string
 	config Config
 	err    error
@@ -42,7 +48,7 @@ func (m Module) ID() string {
 }
 
 func (m Module) Name() string {
-	return "Redis"
+	return "Redis / Valkey"
 }
 
 func (m Module) Detect(ctx checks.Context) bool {
@@ -69,38 +75,39 @@ func (c checkVersion) ID() string {
 }
 
 func (c checkVersion) Title() string {
-	return "Redis version"
+	return "Redis or Valkey version"
 }
 
 func (c checkVersion) Run(ctx checks.Context) checks.Result {
 	result := newResult(c.ID(), c.Title(), checks.SeverityInfo, checks.StatusInfo)
-	result.Summary = "Redis version was collected."
-	result.ClientSummary = "Redis version information was recorded."
-	result.AdminDetails = "Collected Redis version from redis-server --version, falling back to redis-cli INFO server."
-	result.Impact = "Redis version inventory helps prioritize patching and lifecycle decisions."
-	result.Recommendation = "Keep Redis on a supported, patched release."
+	result.Summary = "Redis or Valkey version was collected."
+	result.ClientSummary = "Redis or Valkey version information was recorded."
+	result.AdminDetails = "Collected version from redis-server/valkey-server --version, falling back to redis-cli/valkey-cli INFO server."
+	result.Impact = "Redis and Valkey version inventory helps prioritize patching and lifecycle decisions."
+	result.Recommendation = "Keep Redis or Valkey on a supported, patched release."
 	result.Remediation = result.Recommendation
-	result.Automation = checks.Automation{Shell: "redis-server --version; redis-cli INFO server | grep '^redis_version:'"}
+	result.Automation = checks.Automation{Shell: "redis-server --version; redis-cli INFO server | grep '^redis_version:'; valkey-server --version; valkey-cli INFO server | grep -E '^(redis|valkey)_version:'"}
 	result.HiddenInClientReport = true
 
-	if !ensureRedisDetected(ctx, &result, "Redis version check") {
+	engine, ok := ensureRedisDetected(ctx, &result, "version check")
+	if !ok {
 		return result
 	}
 
-	version, source, err := redisVersion(ctx)
+	version, source, err := redisVersion(ctx, engine)
 	if err != nil {
 		result.Status = checks.StatusError
 		result.Severity = checks.SeverityMedium
-		result.Summary = "Redis version could not be collected."
-		result.ClientSummary = "Redis version could not be verified."
-		result.AdminDetails = "Both redis-server --version and redis-cli INFO server failed.\n" + err.Error()
-		result.Evidence = "version=unknown command_error=true"
+		result.Summary = "Redis or Valkey version could not be collected."
+		result.ClientSummary = "Redis or Valkey version could not be verified."
+		result.AdminDetails = "Version commands failed.\n" + err.Error()
+		result.Evidence = "engine=" + engine + "; version=unknown; command_error=true"
 		result.Error = err.Error()
 		result.HiddenInClientReport = true
 		return result
 	}
 
-	result.Evidence = "version=" + version + " source=" + source
+	result.Evidence = "engine=" + engine + "; version=" + version + "; source=" + source
 	return result
 }
 
@@ -126,18 +133,18 @@ func (c checkBindLocalhost) Run(ctx checks.Context) checks.Result {
 	result.Remediation = result.Recommendation
 	result.RemediationSteps = redisConfigSteps("Set bind to 127.0.0.1 or private application interfaces only.")
 	result.Automation = checks.Automation{
-		Shell:   "grep -E '^\\s*bind\\b' /etc/redis/redis.conf /etc/redis.conf 2>/dev/null",
+		Shell:   redisConfigGrep("'^\\s*bind\\b'"),
 		Ansible: ansibleLine("bind 127.0.0.1"),
 		Chef:    chefLine("bind 127.0.0.1"),
 	}
 
-	config, ok := loadConfigForResult(ctx, c.cache, &result, "bind address check")
+	config, engine, ok := loadConfigForResult(ctx, c.cache, &result, "bind address check")
 	if !ok {
 		return result
 	}
 
 	binds := redisBindValues(config)
-	result.Evidence = "bind=" + bindEvidence(binds)
+	result.Evidence = "engine=" + engine + "; bind=" + bindEvidence(binds)
 	assessment := assessBind(binds)
 	switch assessment {
 	case bindMissing:
@@ -178,18 +185,18 @@ func (c checkProtectedMode) Run(ctx checks.Context) checks.Result {
 	result.Remediation = result.Recommendation
 	result.RemediationSteps = redisConfigSteps("Set protected-mode yes.")
 	result.Automation = checks.Automation{
-		Shell:   "grep -E '^\\s*protected-mode\\b' /etc/redis/redis.conf /etc/redis.conf 2>/dev/null",
+		Shell:   redisConfigGrep("'^\\s*protected-mode\\b'"),
 		Ansible: ansibleLine("protected-mode yes"),
 		Chef:    chefLine("protected-mode yes"),
 	}
 
-	config, ok := loadConfigForResult(ctx, c.cache, &result, "protected-mode check")
+	config, engine, ok := loadConfigForResult(ctx, c.cache, &result, "protected-mode check")
 	if !ok {
 		return result
 	}
 
 	value := directiveFirstValue(config, "protected-mode", "default(yes)")
-	result.Evidence = "protected-mode=" + value
+	result.Evidence = "engine=" + engine + "; protected-mode=" + value
 	if strings.EqualFold(value, "no") {
 		result.Title = "Redis protected mode is disabled"
 		result.Status = checks.StatusWarn
@@ -221,18 +228,18 @@ func (c checkMaxMemory) Run(ctx checks.Context) checks.Result {
 	result.Remediation = result.Recommendation
 	result.RemediationSteps = redisConfigSteps("Set maxmemory to an application-appropriate non-zero value.")
 	result.Automation = checks.Automation{
-		Shell:   "grep -E '^\\s*maxmemory\\b' /etc/redis/redis.conf /etc/redis.conf 2>/dev/null",
+		Shell:   redisConfigGrep("'^\\s*maxmemory\\b'"),
 		Ansible: ansibleLine("maxmemory 512mb"),
 		Chef:    chefLine("maxmemory 512mb"),
 	}
 
-	config, ok := loadConfigForResult(ctx, c.cache, &result, "maxmemory check")
+	config, engine, ok := loadConfigForResult(ctx, c.cache, &result, "maxmemory check")
 	if !ok {
 		return result
 	}
 
 	value := directiveFirstValue(config, "maxmemory", "not_set")
-	result.Evidence = "maxmemory=" + value
+	result.Evidence = "engine=" + engine + "; maxmemory=" + value
 	if value == "not_set" || maxMemoryIsZero(value) {
 		result.Title = "Redis maxmemory is not configured"
 		result.Status = checks.StatusWarn
@@ -264,19 +271,19 @@ func (c checkPersistence) Run(ctx checks.Context) checks.Result {
 	result.Remediation = result.Recommendation
 	result.RemediationSteps = redisConfigSteps("Enable appendonly yes or configure save snapshot directives.")
 	result.Automation = checks.Automation{
-		Shell:   "grep -E '^\\s*(appendonly|save)\\b' /etc/redis/redis.conf /etc/redis.conf 2>/dev/null",
+		Shell:   redisConfigGrep("'^\\s*(appendonly|save)\\b'"),
 		Ansible: ansibleLine("appendonly yes"),
 		Chef:    chefLine("appendonly yes"),
 	}
 
-	config, ok := loadConfigForResult(ctx, c.cache, &result, "persistence check")
+	config, engine, ok := loadConfigForResult(ctx, c.cache, &result, "persistence check")
 	if !ok {
 		return result
 	}
 
 	appendOnly := directiveFirstValue(config, "appendonly", "no")
 	save := saveEvidence(config)
-	result.Evidence = "appendonly=" + appendOnly + "; save=" + save
+	result.Evidence = "engine=" + engine + "; appendonly=" + appendOnly + "; save=" + save
 	if !strings.EqualFold(appendOnly, "yes") && !hasSaveSnapshots(config) {
 		result.Title = "Redis persistence is not configured"
 		result.Status = checks.StatusWarn
@@ -308,19 +315,19 @@ func (c checkAuthentication) Run(ctx checks.Context) checks.Result {
 	result.Remediation = result.Recommendation
 	result.RemediationSteps = redisConfigSteps("Configure requirepass or Redis ACL users with strong secrets.")
 	result.Automation = checks.Automation{
-		Shell:   "awk 'tolower($1)==\"requirepass\"{print \"requirepass set\"} tolower($1)==\"user\"{print \"acl user configured\"}' /etc/redis/redis.conf /etc/redis.conf 2>/dev/null",
+		Shell:   "awk 'tolower($1)==\"requirepass\"{print \"requirepass set\"} tolower($1)==\"user\"{print \"acl user configured\"}' /etc/redis/redis.conf /etc/redis.conf /etc/valkey/valkey.conf /etc/valkey.conf 2>/dev/null",
 		Ansible: ansibleLine("requirepass {{ redis_requirepass }}"),
 		Chef:    chefLine("requirepass CHANGE_ME"),
 	}
 
-	config, ok := loadConfigForResult(ctx, c.cache, &result, "authentication check")
+	config, engine, ok := loadConfigForResult(ctx, c.cache, &result, "authentication check")
 	if !ok {
 		return result
 	}
 
 	requirePass := requirePassSet(config)
 	acl := aclEnabled(config)
-	result.Evidence = fmt.Sprintf("requirepass=%s; acl=%s", setEvidence(requirePass), enabledEvidence(acl))
+	result.Evidence = fmt.Sprintf("engine=%s; requirepass=%s; acl=%s", engine, setEvidence(requirePass), enabledEvidence(acl))
 	if requirePass || acl {
 		return result
 	}
@@ -344,38 +351,66 @@ func newResult(id, title string, severity checks.Severity, status checks.Status)
 }
 
 func detect(ctx checks.Context) (bool, string) {
+	detection, ok := detectEngine(ctx)
+	return ok, detection.Evidence
+}
+
+type engineDetection struct {
+	Engine   string
+	Evidence string
+}
+
+func detectEngine(ctx checks.Context) (engineDetection, bool) {
 	if !linuxTarget(ctx) {
-		return false, "detected=false goos=" + ctx.Host.GOOS
+		return engineDetection{Evidence: "engine=none; detected=false goos=" + ctx.Host.GOOS}, false
 	}
 
 	for _, svc := range ctx.Services {
 		unit := strings.ToLower(svc.Unit)
 		if unit == "redis.service" || unit == "redis-server.service" {
-			return true, "running_service=" + svc.Unit
+			return engineDetection{Engine: engineRedis, Evidence: "engine=redis; running_service=" + svc.Unit}, true
 		}
 		if matched, err := pathmatch.Match("redis*.service", unit); err == nil && matched {
-			return true, "running_service=" + svc.Unit
+			return engineDetection{Engine: engineRedis, Evidence: "engine=redis; running_service=" + svc.Unit}, true
+		}
+		if unit == "valkey.service" || unit == "valkey-server.service" {
+			return engineDetection{Engine: engineValkey, Evidence: "engine=valkey; running_service=" + svc.Unit}, true
+		}
+		if matched, err := pathmatch.Match("valkey*.service", unit); err == nil && matched {
+			return engineDetection{Engine: engineValkey, Evidence: "engine=valkey; running_service=" + svc.Unit}, true
 		}
 	}
 
 	if ctx.Runner != nil {
 		if output, err := ctx.Runner.Run(ctx.Context, "pgrep", "-x", "redis-server"); err == nil && strings.TrimSpace(string(output)) != "" {
-			return true, "process=redis-server"
+			return engineDetection{Engine: engineRedis, Evidence: "engine=redis; process=redis-server"}, true
+		}
+		if output, err := ctx.Runner.Run(ctx.Context, "pgrep", "-x", "valkey-server"); err == nil && strings.TrimSpace(string(output)) != "" {
+			return engineDetection{Engine: engineValkey, Evidence: "engine=valkey; process=valkey-server"}, true
 		}
 	}
 
 	if lookPath != nil {
 		if path, err := lookPath("redis-cli"); err == nil && path != "" {
-			return true, "binary=" + path
+			return engineDetection{Engine: engineRedis, Evidence: "engine=redis; binary=" + path}, true
+		}
+		if path, err := lookPath("valkey-cli"); err == nil && path != "" {
+			return engineDetection{Engine: engineValkey, Evidence: "engine=valkey; binary=" + path}, true
 		}
 	}
 	if path, ok := firstExistingPath(redisBinaryPaths); ok {
-		return true, "binary=" + path
+		return engineDetection{Engine: engineRedis, Evidence: "engine=redis; binary=" + path}, true
+	}
+	if path, ok := firstExistingPath(valkeyBinaryPaths); ok {
+		return engineDetection{Engine: engineValkey, Evidence: "engine=valkey; binary=" + path}, true
 	}
 	if path, ok := firstExistingPath(redisConfigPaths); ok {
-		return true, "path_exists=" + path
+		return engineDetection{Engine: engineRedis, Evidence: "engine=redis; path_exists=" + path}, true
 	}
-	return false, "detected=false"
+	if path, ok := firstExistingPath(valkeyConfigPaths); ok {
+		return engineDetection{Engine: engineValkey, Evidence: "engine=valkey; path_exists=" + path}, true
+	}
+	return engineDetection{Evidence: "engine=none; detected=false"}, false
 }
 
 func linuxTarget(ctx checks.Context) bool {
@@ -385,74 +420,98 @@ func linuxTarget(ctx checks.Context) bool {
 	return ctx.Host.GOOS == "linux" || len(ctx.Host.OSRelease) > 0
 }
 
-func ensureRedisDetected(ctx checks.Context, result *checks.Result, checkName string) bool {
-	detected, evidence := detect(ctx)
+func ensureRedisDetected(ctx checks.Context, result *checks.Result, checkName string) (string, bool) {
+	detection, detected := detectEngine(ctx)
 	if detected {
-		return true
+		return detection.Engine, true
 	}
 	result.Status = checks.StatusNotApplicable
 	result.Severity = checks.SeverityInfo
-	result.Summary = "Redis was not detected; " + checkName + " was skipped."
-	result.ClientSummary = "Redis was not detected."
-	result.AdminDetails = "This check requires Redis to be installed or running."
-	result.Evidence = evidence
+	result.Summary = "Redis or Valkey was not detected; " + checkName + " was skipped."
+	result.ClientSummary = "Redis or Valkey was not detected."
+	result.AdminDetails = "This check requires Redis or Valkey to be installed or running."
+	result.Evidence = detection.Evidence
 	result.HiddenInClientReport = true
-	return false
+	return "", false
 }
 
-func (c *configCache) load() (string, Config, error) {
+func (c *configCache) load(ctx checks.Context) (string, string, Config, error) {
 	if c == nil {
-		return loadConfig()
+		return loadConfig(ctx)
 	}
 	if !c.loaded {
-		c.path, c.config, c.err = loadConfig()
+		c.engine, c.path, c.config, c.err = loadConfig(ctx)
 		c.loaded = true
 	}
-	return c.path, c.config, c.err
+	return c.engine, c.path, c.config, c.err
 }
 
-func loadConfig() (string, Config, error) {
-	path, ok := firstExistingPath(redisConfigPaths)
+func loadConfig(ctx checks.Context) (string, string, Config, error) {
+	detection, detected := detectEngine(ctx)
+	engine := detection.Engine
+	if !detected {
+		engine = engineRedis
+	}
+	paths := configPathsForEngine(engine)
+	path, ok := firstExistingPath(paths)
 	if !ok {
-		return "", Config{}, os.ErrNotExist
+		return engine, "", Config{}, os.ErrNotExist
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return path, Config{}, err
+		return engine, path, Config{}, err
 	}
-	return path, ParseConfig(string(data)), nil
+	return engine, path, ParseConfig(string(data)), nil
 }
 
-func loadConfigForResult(ctx checks.Context, cache *configCache, result *checks.Result, checkName string) (Config, bool) {
-	if !ensureRedisDetected(ctx, result, checkName) {
-		return Config{}, false
+func loadConfigForResult(ctx checks.Context, cache *configCache, result *checks.Result, checkName string) (Config, string, bool) {
+	engine, detected := ensureRedisDetected(ctx, result, checkName)
+	if !detected {
+		return Config{}, "", false
 	}
 
-	path, config, err := cache.load()
+	configEngine, path, config, err := cache.load(ctx)
+	if configEngine != "" {
+		engine = configEngine
+	}
 	if err == nil {
 		result.AdminDetails += "\nConfig path: " + path
-		return config, true
+		return config, engine, true
 	}
 	if errors.Is(err, os.ErrNotExist) {
 		result.Status = checks.StatusNotApplicable
 		result.Severity = checks.SeverityInfo
-		result.Summary = "Redis configuration file was not found; " + checkName + " was skipped."
-		result.ClientSummary = "Redis configuration could not be found."
-		result.AdminDetails = "Checked Redis configuration paths: " + strings.Join(redisConfigPaths, ", ")
-		result.Evidence = "redis_conf=not_found"
+		result.Summary = engineDisplayName(engine) + " configuration file was not found; " + checkName + " was skipped."
+		result.ClientSummary = engineDisplayName(engine) + " configuration could not be found."
+		result.AdminDetails = "Checked configuration paths: " + strings.Join(configPathsForEngine(engine), ", ")
+		result.Evidence = "engine=" + engine + "; config=not_found"
 		result.HiddenInClientReport = true
-		return Config{}, false
+		return Config{}, engine, false
 	}
 
 	result.Status = checks.StatusError
 	result.Severity = checks.SeverityMedium
-	result.Summary = "Redis configuration file could not be read."
-	result.ClientSummary = "Redis configuration could not be verified."
-	result.AdminDetails = "Read failed for Redis configuration.\n" + err.Error()
-	result.Evidence = "redis_conf=read_error path=" + path
+	result.Summary = engineDisplayName(engine) + " configuration file could not be read."
+	result.ClientSummary = engineDisplayName(engine) + " configuration could not be verified."
+	result.AdminDetails = "Read failed for configuration.\n" + err.Error()
+	result.Evidence = "engine=" + engine + "; config=read_error path=" + path
 	result.Error = err.Error()
 	result.HiddenInClientReport = true
-	return Config{}, false
+	return Config{}, engine, false
+}
+
+func configPathsForEngine(engine string) []string {
+	if engine == engineValkey {
+		return valkeyConfigPaths
+	}
+	return redisConfigPaths
+}
+
+func engineDisplayName(engine string) string {
+	if engine == engineValkey {
+		return "Valkey"
+	}
+	return "Redis"
 }
 
 func firstExistingPath(paths []string) (string, bool) {
@@ -464,27 +523,38 @@ func firstExistingPath(paths []string) (string, bool) {
 	return "", false
 }
 
-func redisVersion(ctx checks.Context) (string, string, error) {
-	output, serverErr := ctx.Runner.Run(ctx.Context, "redis-server", "--version")
+func redisVersion(ctx checks.Context, engine string) (string, string, error) {
+	if ctx.Runner == nil {
+		return "", "", fmt.Errorf("runner is not available")
+	}
+
+	serverCommand := "redis-server"
+	cliCommand := "redis-cli"
+	if engine == engineValkey {
+		serverCommand = "valkey-server"
+		cliCommand = "valkey-cli"
+	}
+
+	output, serverErr := ctx.Runner.Run(ctx.Context, serverCommand, "--version")
 	if serverErr == nil {
 		if version := parseRedisServerVersion(string(output)); version != "" {
-			return version, "redis-server", nil
+			return version, serverCommand, nil
 		}
-		serverErr = fmt.Errorf("redis-server --version output did not contain a version")
+		serverErr = fmt.Errorf("%s --version output did not contain a version", serverCommand)
 	}
 
-	output, cliErr := ctx.Runner.Run(ctx.Context, "redis-cli", "INFO", "server")
+	output, cliErr := ctx.Runner.Run(ctx.Context, cliCommand, "INFO", "server")
 	if cliErr == nil {
 		if version := parseRedisInfoVersion(string(output)); version != "" {
-			return version, "redis-cli", nil
+			return version, cliCommand, nil
 		}
-		cliErr = fmt.Errorf("redis-cli INFO server output did not contain redis_version")
+		cliErr = fmt.Errorf("%s INFO server output did not contain a version", cliCommand)
 	}
 
-	return "", "", fmt.Errorf("redis-server --version: %v; redis-cli INFO server: %v", serverErr, cliErr)
+	return "", "", fmt.Errorf("%s --version: %v; %s INFO server: %v", serverCommand, serverErr, cliCommand, cliErr)
 }
 
-var redisVersionRE = regexp.MustCompile(`(?:v=|redis_version:)([0-9]+(?:\.[0-9]+){1,3})`)
+var redisVersionRE = regexp.MustCompile(`(?:v=|redis_version:|valkey_version:)([0-9]+(?:\.[0-9]+){1,3})`)
 
 func parseRedisServerVersion(output string) string {
 	matches := redisVersionRE.FindStringSubmatch(output)
@@ -635,10 +705,14 @@ func enabledEvidence(ok bool) string {
 
 func redisConfigSteps(action string) []string {
 	return []string{
-		"Edit the active redis.conf file.",
+		"Edit the active Redis or Valkey configuration file.",
 		action,
-		"Validate the configuration and restart Redis during an approved maintenance window.",
+		"Validate the configuration and restart Redis or Valkey during an approved maintenance window.",
 	}
+}
+
+func redisConfigGrep(pattern string) string {
+	return "grep -E " + pattern + " /etc/redis/redis.conf /etc/redis.conf /etc/valkey/valkey.conf /etc/valkey.conf 2>/dev/null"
 }
 
 func ansibleLine(line string) string {
